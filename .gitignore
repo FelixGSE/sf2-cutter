@@ -1,0 +1,11 @@
+/target
+
+# SoundFont files used for local testing only (large, not committed)
+*.sf2
+
+# cargo-mutants output
+/mutants.out
+/mutants.out.old
+
+# local working documents
+/IMPROVEMENTS.md

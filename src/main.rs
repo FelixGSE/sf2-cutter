@@ -1,0 +1,445 @@
+//! `sf2-cutter` command line: list, validate, and extract presets from
+//! `SoundFont` 2 files. Thin glue over the library; all format logic lives in
+//! `sf2_cutter::*`.
+
+use std::fmt::Write as _;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+
+use sf2_cutter::extract::{self, Options};
+use sf2_cutter::model::{Preset, SoundFont};
+use sf2_cutter::select::{Recipe, Selection};
+use sf2_cutter::validate::{Issue, Severity, has_errors, validate};
+use sf2_cutter::{parse, write};
+
+#[derive(Parser)]
+#[command(
+    name = "sf2-cutter",
+    version,
+    about = "Cut SoundFont (.sf2) files down to the presets you need"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// List all presets with bank:program, zone count, and sample size
+    List {
+        /// Input .sf2 file
+        input: PathBuf,
+    },
+    /// Strictly parse and integrity-check a file (exit code 1 on errors)
+    Validate {
+        /// Input .sf2 file
+        input: PathBuf,
+    },
+    /// Extract selected presets into a new .sf2 file
+    Extract {
+        /// Input .sf2 file
+        input: PathBuf,
+        /// Output .sf2 file (required unless --dry-run)
+        #[arg(short, long, required_unless_present = "dry_run")]
+        output: Option<PathBuf>,
+        /// Case-insensitive name pattern; `*` wildcards allowed (repeatable)
+        #[arg(short = 'm', long = "match", value_name = "PATTERN")]
+        patterns: Vec<String>,
+        /// Preset address BANK:PROG, e.g. 0:4 (repeatable)
+        #[arg(short = 'p', long = "preset", value_name = "BANK:PROG")]
+        presets: Vec<String>,
+        /// TOML recipe file (keys: match, presets, `keep_drums`, renumber)
+        #[arg(short = 'c', long, value_name = "FILE")]
+        config: Option<PathBuf>,
+        /// Pick presets interactively (pre-checked with the other criteria)
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Also keep every preset on percussion bank 128
+        #[arg(long)]
+        keep_drums: bool,
+        /// Compact program numbers per bank, starting at 0
+        #[arg(long)]
+        renumber: bool,
+        /// Report what would be kept without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+type CliResult = Result<ExitCode, Box<dyn std::error::Error>>;
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(code) => code,
+        Err(error) => {
+            emit_err(&format!("error: {error}\n"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> CliResult {
+    match cli.command {
+        Command::List { input } => cmd_list(&input),
+        Command::Validate { input } => cmd_validate(&input),
+        Command::Extract {
+            input,
+            output,
+            patterns,
+            presets,
+            config,
+            interactive,
+            keep_drums,
+            renumber,
+            dry_run,
+        } => cmd_extract(&ExtractArgs {
+            input,
+            output,
+            patterns,
+            presets,
+            config,
+            interactive,
+            keep_drums,
+            renumber,
+            dry_run,
+        }),
+    }
+}
+
+fn load_font(path: &Path) -> Result<(SoundFont, u64), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let font = parse::parse(&bytes)?;
+    Ok((font, bytes.len() as u64))
+}
+
+/// Preset indices sorted by (bank, program) for stable, readable listings.
+fn sorted_preset_indices(font: &SoundFont) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..font.presets.len()).collect();
+    indices.sort_by_key(|&i| (font.presets[i].bank, font.presets[i].program, i));
+    indices
+}
+
+fn preset_label(preset: &Preset) -> String {
+    format!(
+        "{:>4}:{:<3} {:<20}",
+        preset.bank,
+        preset.program,
+        preset.name.to_display()
+    )
+}
+
+/// Writes to stdout, treating a closed pipe (e.g. `sf2-cutter list | head`)
+/// as success instead of panicking the way `println!` would.
+fn emit(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => Ok(other?),
+    }
+}
+
+fn cmd_list(input: &Path) -> CliResult {
+    let (font, file_size) = load_font(input)?;
+    let mut buf = String::new();
+    let _ = writeln!(
+        buf,
+        "{}",
+        font.name().unwrap_or_else(|| "(unnamed font)".into())
+    );
+    let _ = writeln!(buf, "bank:prog name                 zones  est. sample KB");
+    for index in sorted_preset_indices(&font) {
+        let preset = &font.presets[index];
+        let kib = extract::preset_sample_bytes(&font, index).div_ceil(1024);
+        let _ = writeln!(
+            buf,
+            "{} {:>5} {:>15}",
+            preset_label(preset),
+            preset.zones.len(),
+            kib
+        );
+    }
+    let _ = writeln!(
+        buf,
+        "{} presets, {} instruments, {} samples, {} bytes",
+        font.presets.len(),
+        font.instruments.len(),
+        font.samples.len(),
+        file_size
+    );
+    emit(&buf)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Issues shown individually before the rest is summarised; keeps fonts with
+/// thousands of findings (hello, Fluid R3) from flooding the terminal.
+const MAX_PRINTED_ISSUES: usize = 20;
+
+/// Writes to stderr, ignoring write failures (a dead stderr leaves nowhere
+/// to report to, and `eprintln!` would panic on a closed pipe).
+fn emit_err(text: &str) {
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(text.as_bytes());
+    let _ = err.flush();
+}
+
+fn print_issues(issues: &[Issue]) {
+    for issue in issues.iter().take(MAX_PRINTED_ISSUES) {
+        emit_err(&format!("{issue}\n"));
+    }
+    if issues.len() > MAX_PRINTED_ISSUES {
+        let errors = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .count();
+        emit_err(&format!(
+            "... and {} more ({} errors, {} warnings in total)\n",
+            issues.len() - MAX_PRINTED_ISSUES,
+            errors,
+            issues.len() - errors
+        ));
+    }
+}
+
+fn cmd_validate(input: &Path) -> CliResult {
+    let (font, _) = load_font(input)?;
+    let issues = validate(&font);
+    print_issues(&issues);
+    if has_errors(&issues) {
+        emit_err(&format!("INVALID: {}\n", input.display()));
+        return Ok(ExitCode::FAILURE);
+    }
+    emit(&format!(
+        "OK: {} ({} presets, {} instruments, {} samples)\n",
+        input.display(),
+        font.presets.len(),
+        font.instruments.len(),
+        font.samples.len()
+    ))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::struct_excessive_bools)] // one bool per CLI switch
+struct ExtractArgs {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    patterns: Vec<String>,
+    presets: Vec<String>,
+    config: Option<PathBuf>,
+    interactive: bool,
+    keep_drums: bool,
+    renumber: bool,
+    dry_run: bool,
+}
+
+fn build_selection(args: &ExtractArgs) -> Result<(Selection, Options), Box<dyn std::error::Error>> {
+    let mut selection = Selection::new();
+    let mut options = Options {
+        renumber: args.renumber,
+    };
+    for pattern in &args.patterns {
+        selection.add_pattern(pattern);
+    }
+    for spec in &args.presets {
+        selection.add_spec(spec.parse()?);
+    }
+    if let Some(config) = &args.config {
+        let text =
+            std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
+        let recipe = Recipe::from_toml_str(&text)?;
+        options.renumber = options.renumber || recipe.renumber;
+        selection.apply_recipe(&recipe)?;
+    }
+    if args.keep_drums {
+        selection.set_keep_drums(true);
+    }
+    Ok((selection, options))
+}
+
+/// Shows a multi-select of all presets, pre-checked with `selection`, and
+/// returns a selection of exactly the picked presets.
+fn pick_interactively(
+    font: &SoundFont,
+    selection: &Selection,
+) -> Result<Selection, Box<dyn std::error::Error>> {
+    let order = sorted_preset_indices(font);
+    let labels: Vec<String> = order
+        .iter()
+        .map(|&i| preset_label(&font.presets[i]))
+        .collect();
+    let defaults: Vec<bool> = order
+        .iter()
+        .map(|&i| selection.matches(i, &font.presets[i]))
+        .collect();
+    let picked = dialoguer::MultiSelect::new()
+        .with_prompt("Select presets to keep (space toggles, enter confirms)")
+        .items(&labels)
+        .defaults(&defaults)
+        .interact()?;
+    let mut result = Selection::new();
+    for position in picked {
+        result.add_index(order[position]);
+    }
+    Ok(result)
+}
+
+fn cmd_extract(args: &ExtractArgs) -> CliResult {
+    let (font, input_size) = load_font(&args.input)?;
+    let input_issues = validate(&font);
+    print_issues(&input_issues);
+    if has_errors(&input_issues) {
+        return Err("input font fails validation; aborting".into());
+    }
+
+    let (mut selection, options) = build_selection(args)?;
+    if args.interactive {
+        selection = pick_interactively(&font, &selection)?;
+        if selection.is_empty() {
+            return Err("no presets picked; aborting".into());
+        }
+    } else if selection.is_empty() {
+        return Err("no selection criteria; use --match/--preset/--config/--interactive".into());
+    }
+
+    let result = extract::extract(&font, &selection, options)?;
+    let output_issues = validate(&result);
+    if has_errors(&output_issues) {
+        print_issues(&output_issues);
+        return Err("internal error: extracted font fails validation; not writing".into());
+    }
+
+    let predicted_size = write::file_size(&result);
+    let mut buf = String::new();
+    let _ = writeln!(
+        buf,
+        "keeping {} of {} presets:",
+        result.presets.len(),
+        font.presets.len()
+    );
+    for preset in &result.presets {
+        let _ = writeln!(buf, "  {}", preset_label(preset));
+    }
+    let _ = writeln!(
+        buf,
+        "instruments: {} of {}, samples: {} of {}",
+        result.instruments.len(),
+        font.instruments.len(),
+        result.samples.len(),
+        font.samples.len()
+    );
+    let _ = writeln!(buf, "size: {input_size} -> {predicted_size} bytes");
+    emit(&buf)?;
+
+    if args.dry_run {
+        emit("dry run: nothing written\n")?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let output = args.output.as_ref().ok_or("missing --output")?;
+    let bytes = write::write(&result)?;
+    // Write via a sibling temp file and rename, so a failed write never
+    // leaves a truncated destination (and `-o <input>` stays safe).
+    let mut tmp_name = output.as_os_str().to_owned();
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
+    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, output)
+        .map_err(|e| format!("cannot move {} to {}: {e}", tmp.display(), output.display()))?;
+    emit(&format!("wrote {}\n", output.display()))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sf2_cutter::model::FixedName;
+
+    fn preset(bank: u16, program: u16) -> Preset {
+        Preset {
+            name: FixedName::from_text("t"),
+            program,
+            bank,
+            library: 0,
+            genre: 0,
+            morphology: 0,
+            zones: vec![],
+        }
+    }
+
+    fn extract_args() -> ExtractArgs {
+        ExtractArgs {
+            input: PathBuf::new(),
+            output: None,
+            patterns: vec![],
+            presets: vec![],
+            config: None,
+            interactive: false,
+            keep_drums: false,
+            renumber: false,
+            dry_run: true,
+        }
+    }
+
+    #[test]
+    fn build_selection_should_keep_recipe_drums_when_cli_flag_absent() {
+        // given: a recipe enabling keep_drums, no --keep-drums flag
+        let path = std::env::temp_dir().join("sf2-cutter-test-keep-drums.toml");
+        std::fs::write(&path, "keep_drums = true\n").unwrap();
+        let args = ExtractArgs {
+            config: Some(path.clone()),
+            ..extract_args()
+        };
+
+        // when
+        let (selection, _) = build_selection(&args).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        // then
+        assert!(selection.matches(0, &preset(128, 0)));
+    }
+
+    #[test]
+    fn build_selection_should_enable_renumber_when_recipe_sets_it() {
+        // given
+        let path = std::env::temp_dir().join("sf2-cutter-test-renumber.toml");
+        std::fs::write(&path, "renumber = true\n").unwrap();
+        let args = ExtractArgs {
+            config: Some(path.clone()),
+            ..extract_args()
+        };
+
+        // when
+        let (_, options) = build_selection(&args).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        // then
+        assert!(options.renumber);
+    }
+
+    #[test]
+    fn build_selection_should_union_flags_when_recipe_also_given() {
+        // given: pattern via flag, spec via recipe
+        let path = std::env::temp_dir().join("sf2-cutter-test-union.toml");
+        std::fs::write(&path, "presets = [\"8:14\"]\n").unwrap();
+        let args = ExtractArgs {
+            patterns: vec!["piano".into()],
+            config: Some(path.clone()),
+            keep_drums: true,
+            ..extract_args()
+        };
+
+        // when
+        let (selection, _) = build_selection(&args).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        // then: all three criteria are active
+        let named = Preset {
+            name: FixedName::from_text("Grand Piano"),
+            ..preset(0, 0)
+        };
+        assert!(selection.matches(0, &named));
+        assert!(selection.matches(1, &preset(8, 14)));
+        assert!(selection.matches(2, &preset(128, 40)));
+    }
+}

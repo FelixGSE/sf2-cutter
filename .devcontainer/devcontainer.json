@@ -1,0 +1,48 @@
+{
+  "name": "sf2-cutter (Rust)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "remoteUser": "dev",
+  "containerUser": "dev",
+  "updateRemoteUserUID": true,
+  "privileged": false,
+  "init": true,
+  "capAdd": [],
+  "securityOpt": [
+    "no-new-privileges:true"
+  ],
+  "mounts": [
+    "source=sf2-cutter-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+    "source=sf2-cutter-claude-config,target=/home/dev/.claude,type=volume",
+    "source=sf2-cutter-gh-config,target=/home/dev/.config/gh,type=volume"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/dev/.claude"
+  },
+  "remoteEnv": {
+    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+  },
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "github.vscode-pull-request-github"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  }
+}

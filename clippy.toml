@@ -1,0 +1,10 @@
+# Complexity ceilings (enforced via `cognitive_complexity` / `too_many_lines` /
+# `excessive_nesting` lints enabled in Cargo.toml's [lints.clippy]).
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 100
+excessive-nesting-threshold = 5
+
+# Tests may unwrap/expect/panic freely; production code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
