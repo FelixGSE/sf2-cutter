@@ -56,6 +56,30 @@ pub enum Error {
     /// `merge` was called with an empty input list.
     #[error("merge needs at least one input font")]
     NothingToMerge,
+    /// A move/rename addressed a preset that does not exist.
+    #[error("no preset at {bank}:{program}")]
+    PresetNotFound {
+        /// Bank of the missing preset.
+        bank: u16,
+        /// Program of the missing preset.
+        program: u16,
+    },
+    /// Two `--move` options share the same source address.
+    #[error("duplicate move source {bank}:{program}")]
+    DuplicateMoveSource {
+        /// Bank of the duplicated source.
+        bank: u16,
+        /// Program of the duplicated source.
+        program: u16,
+    },
+    /// A `--move` target address would be occupied by more than one preset.
+    #[error("preset address {bank}:{program} is contested after moves")]
+    MoveCollision {
+        /// Bank of the contested address.
+        bank: u16,
+        /// Program of the contested address.
+        program: u16,
+    },
     /// Renumbering would push a bank's program numbers past the MIDI limit.
     #[error("bank {bank} has more than 128 presets; cannot renumber into 0..=127")]
     RenumberOverflow {
