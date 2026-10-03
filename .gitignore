@@ -9,3 +9,9 @@
 
 # local working documents
 /IMPROVEMENTS.md
+
+# fuzzing: keep seed inputs, ignore generated corpus/artifacts/build
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/*/*
+!/fuzz/corpus/*/seed-*

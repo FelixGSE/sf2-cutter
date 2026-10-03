@@ -28,7 +28,7 @@ RUN rustup component add rustfmt clippy rust-analyzer rust-src llvm-tools
 # /usr/local/cargo/bin, which is an image layer (only the registry is
 # volume-backed), so installing here survives container rebuilds.
 # Compiling the two tools adds ~10 minutes to a cold image build.
-RUN cargo install --locked cargo-llvm-cov cargo-mutants
+RUN cargo install --locked cargo-llvm-cov cargo-mutants cargo-fuzz
 
 # Create the unprivileged user (no sudo). Pre-create the cargo registry dir so a
 # named volume mounted there inherits dev ownership instead of root.

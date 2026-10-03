@@ -75,8 +75,13 @@ rustfmt, clippy, rust-analyzer, GitHub CLI, Claude Code; runs as unprivileged `d
 ```sh
 make check     # full gate: fmt-check, clippy -D warnings, tests, coverage floor (80% lines)
 make mutants   # mutation testing (slow; run before merging logic changes)
+make fuzz      # time-boxed fuzzing of the parser and round trip (nightly)
 cargo test -- --ignored   # real-font tests; need FluidR3_GM.sf2 in the repo root
 ```
+
+The test suite includes property-based tests (random fonts, round-trip and extraction
+invariants) and, when fluidsynth is on PATH, renders an extracted font to WAV and asserts
+the audio is not silence.
 
 See `CLAUDE.md` for architecture and the mandatory test conventions
 (given/when/then structure, `<subject>_should_<outcome>_when_<condition>` naming).

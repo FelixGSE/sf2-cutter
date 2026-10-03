@@ -22,3 +22,6 @@ cognitive_complexity = "warn"
 excessive_nesting = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
+
+[dev-dependencies]
+proptest = "1.11.0"
