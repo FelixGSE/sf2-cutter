@@ -17,6 +17,8 @@ pub mod model;
 pub mod parse;
 pub mod riff;
 pub mod select;
+#[cfg(feature = "sf3")]
+mod sf3;
 pub mod validate;
 pub mod write;
 

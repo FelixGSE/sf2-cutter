@@ -130,6 +130,32 @@ fn extractor_should_produce_small_valid_font_when_matching_piano() {
 }
 
 #[test]
+#[ignore = "requires MuseScore_General.sf3 in the crate root (and the sf3 feature)"]
+#[cfg(feature = "sf3")]
+fn extractor_should_decompress_sf3_when_matching_piano() {
+    // given
+    let Some(bytes) = std::fs::read("MuseScore_General.sf3").ok() else {
+        eprintln!("skipped: MuseScore_General.sf3 not present");
+        return;
+    };
+    let font = parse::parse(&bytes).unwrap();
+    assert_eq!(font.version().map(|(major, _)| major), Some(3));
+    let mut selection = Selection::new();
+    selection.add_pattern("piano");
+
+    // when
+    let result = extract(&font, &selection, &Options::default()).unwrap();
+    let output = write::write(&result).unwrap();
+    let reparsed = parse::parse(&output).unwrap();
+
+    // then: decoded to plain sf2 — version lowered, nothing compressed
+    assert_eq!(reparsed.version(), Some((2, 4)));
+    assert!(reparsed.samples.iter().all(|s| !s.is_compressed()));
+    assert_ne!(reparsed.presets.len(), 0);
+    assert!(!has_errors(&validate(&reparsed)));
+}
+
+#[test]
 #[ignore = "requires fluidsynth on PATH and FluidR3_GM.sf2"]
 fn fluidsynth_should_load_extracted_font_when_available() {
     // given

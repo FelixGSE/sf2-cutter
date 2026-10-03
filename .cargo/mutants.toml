@@ -2,5 +2,7 @@
 # The CLI entry point is thin glue (arg parsing, printing, interactive prompts)
 # and is exercised by integration tests only where practical; mutation testing
 # focuses on the library, where the format and extraction logic live.
-exclude_globs = ["src/main.rs"]
+# sf3.rs is a thin lewton wrapper; its happy path needs a real .sf3 file
+# (ignored integration test), so mutants there cannot be killed hermetically.
+exclude_globs = ["src/main.rs", "src/sf3.rs"]
 timeout_multiplier = 1.5
