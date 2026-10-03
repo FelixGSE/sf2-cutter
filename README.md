@@ -40,7 +40,13 @@ sf2-cutter extract FluidR3_GM.sf2 -m piano --name "Just Pianos" -o pianos.sf2
 
 # Merge several fonts into one (presets keep their bank:prog addresses)
 sf2-cutter merge pianos.sf2 drums.sf2 --name "My Rig" -o rig.sf2
+
+# Move and rename presets in the output (works on extract and merge)
+sf2-cutter extract FluidR3_GM.sf2 -m piano --move "8:6=0:20" --rename "0:0=Concert Grand" -o out.sf2
 ```
+
+`--move` applies all moves simultaneously (so two moves can swap addresses) and refuses
+contested targets; `--rename` changes a preset's name (19 characters max).
 
 Selection criteria:
 

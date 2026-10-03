@@ -9,6 +9,7 @@
 //! extraction output always passes [`validate::validate`].
 
 pub mod builder;
+pub mod edit;
 pub mod error;
 pub mod extract;
 pub mod merge;

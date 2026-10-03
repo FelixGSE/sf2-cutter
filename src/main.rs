@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 
 use sf2_cutter::extract::{self, Options};
 use sf2_cutter::model::{Preset, SoundFont};
-use sf2_cutter::select::{Recipe, Selection};
+use sf2_cutter::select::{PresetSpec, Recipe, Selection};
 use sf2_cutter::validate::{Issue, Severity, has_errors, validate};
 use sf2_cutter::{merge, parse, write};
 
@@ -75,6 +75,13 @@ enum Command {
         /// Rename the output bank (sets the INAM chunk)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Move a kept preset to a new address, e.g. 8:6=0:20 (repeatable;
+        /// applied after extraction, all moves simultaneously)
+        #[arg(long = "move", value_name = "B:P=B:P")]
+        moves: Vec<String>,
+        /// Rename a kept preset, e.g. "0:0=Concert Grand" (repeatable)
+        #[arg(long = "rename", value_name = "B:P=NAME")]
+        renames: Vec<String>,
         /// Emit a machine-readable JSON report on stdout
         #[arg(long)]
         json: bool,
@@ -90,6 +97,12 @@ enum Command {
         /// Rename the output bank (sets the INAM chunk)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Move a preset to a new address, e.g. 8:6=0:20 (repeatable)
+        #[arg(long = "move", value_name = "B:P=B:P")]
+        moves: Vec<String>,
+        /// Rename a preset, e.g. "0:0=Concert Grand" (repeatable)
+        #[arg(long = "rename", value_name = "B:P=NAME")]
+        renames: Vec<String>,
         /// Emit a machine-readable JSON report on stdout
         #[arg(long)]
         json: bool,
@@ -123,6 +136,8 @@ fn run(cli: Cli) -> CliResult {
             renumber,
             dry_run,
             name,
+            moves,
+            renames,
             json,
         } => cmd_extract(&ExtractArgs {
             input,
@@ -135,14 +150,25 @@ fn run(cli: Cli) -> CliResult {
             renumber,
             dry_run,
             name,
+            moves,
+            renames,
             json,
         }),
         Command::Merge {
             inputs,
             output,
             name,
+            moves,
+            renames,
             json,
-        } => cmd_merge(&inputs, &output, name.as_deref(), json),
+        } => cmd_merge(&MergeArgs {
+            inputs,
+            output,
+            name,
+            moves,
+            renames,
+            json,
+        }),
     }
 }
 
@@ -369,7 +395,58 @@ struct ExtractArgs {
     renumber: bool,
     dry_run: bool,
     name: Option<String>,
+    moves: Vec<String>,
+    renames: Vec<String>,
     json: bool,
+}
+
+struct MergeArgs {
+    inputs: Vec<PathBuf>,
+    output: PathBuf,
+    name: Option<String>,
+    moves: Vec<String>,
+    renames: Vec<String>,
+    json: bool,
+}
+
+/// Parses `B:P=B:P` into a (from, to) move.
+fn parse_move(text: &str) -> Result<(PresetSpec, PresetSpec), Box<dyn std::error::Error>> {
+    let (from, to) = text
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --move `{text}` (expected B:P=B:P)"))?;
+    Ok((from.trim().parse()?, to.trim().parse()?))
+}
+
+/// Parses `B:P=NAME` into an (address, name) rename.
+fn parse_rename(text: &str) -> Result<(PresetSpec, String), Box<dyn std::error::Error>> {
+    let (spec, name) = text
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --rename `{text}` (expected B:P=NAME)"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("invalid --rename `{text}`: empty name").into());
+    }
+    Ok((spec.trim().parse()?, name.to_string()))
+}
+
+/// Applies `--move` and `--rename` options to a result font.
+fn apply_edits(
+    font: &mut SoundFont,
+    moves: &[String],
+    renames: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let moves = moves
+        .iter()
+        .map(|text| parse_move(text))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !moves.is_empty() {
+        sf2_cutter::edit::remap_presets(font, &moves)?;
+    }
+    for text in renames {
+        let (spec, name) = parse_rename(text)?;
+        sf2_cutter::edit::rename_preset(font, spec, &name)?;
+    }
+    Ok(())
 }
 
 fn build_selection(args: &ExtractArgs) -> Result<(Selection, Options), Box<dyn std::error::Error>> {
@@ -442,7 +519,8 @@ fn cmd_extract(args: &ExtractArgs) -> CliResult {
         return Err("no selection criteria; use --match/--preset/--config/--interactive".into());
     }
 
-    let result = extract::extract(&font, &selection, &options)?;
+    let mut result = extract::extract(&font, &selection, &options)?;
+    apply_edits(&mut result, &args.moves, &args.renames)?;
     let output_issues = validate(&result);
     if has_errors(&output_issues) {
         print_issues(&output_issues);
@@ -528,32 +606,33 @@ fn extract_json_report(
 }
 
 /// Loads, validates, merges, re-validates, and writes several fonts.
-fn cmd_merge(inputs: &[PathBuf], output: &Path, name: Option<&str>, json: bool) -> CliResult {
-    let mut fonts = Vec::with_capacity(inputs.len());
+fn cmd_merge(args: &MergeArgs) -> CliResult {
+    let mut fonts = Vec::with_capacity(args.inputs.len());
     let mut input_size = 0;
-    for input in inputs {
+    for input in &args.inputs {
         let (font, size) = load_font(input)?;
         let issues = validate(&font);
         if has_errors(&issues) {
             print_issues(&issues);
             return Err(format!("{} fails validation; aborting", input.display()).into());
         }
-        if !json {
+        if !args.json {
             print_issues(&issues);
         }
         fonts.push(font);
         input_size += size;
     }
 
-    let result = merge::merge(&fonts, name)?;
+    let mut result = merge::merge(&fonts, args.name.as_deref())?;
+    apply_edits(&mut result, &args.moves, &args.renames)?;
     let output_issues = validate(&result);
     if has_errors(&output_issues) {
         print_issues(&output_issues);
         return Err("internal error: merged font fails validation; not writing".into());
     }
     let predicted_size = write::file_size(&result);
-    write_output(output, &result)?;
-    if json {
+    write_output(&args.output, &result)?;
+    if args.json {
         emit_json(&ExtractJson {
             kept: (0..result.presets.len())
                 .map(|index| preset_json(&result, index))
@@ -562,7 +641,7 @@ fn cmd_merge(inputs: &[PathBuf], output: &Path, name: Option<&str>, json: bool) 
             samples: result.samples.len(),
             input_size,
             predicted_size,
-            written: Some(output.display().to_string()),
+            written: Some(args.output.display().to_string()),
         })?;
     } else {
         emit(&format!(
@@ -571,7 +650,7 @@ fn cmd_merge(inputs: &[PathBuf], output: &Path, name: Option<&str>, json: bool) 
             result.presets.len(),
             result.instruments.len(),
             result.samples.len(),
-            output.display()
+            args.output.display()
         ))?;
     }
     Ok(ExitCode::SUCCESS)
@@ -606,6 +685,8 @@ mod tests {
             renumber: false,
             dry_run: true,
             name: None,
+            moves: vec![],
+            renames: vec![],
             json: false,
         }
     }
@@ -670,6 +751,44 @@ mod tests {
         assert!(selection.matches(0, &named));
         assert!(selection.matches(1, &preset(8, 14)));
         assert!(selection.matches(2, &preset(128, 40)));
+    }
+
+    #[test]
+    fn parse_move_should_split_source_and_target_when_text_is_valid() {
+        // given / when
+        let (from, to) = parse_move("8:6=0:20").unwrap();
+
+        // then
+        assert_eq!((from.bank, from.program), (8, 6));
+        assert_eq!((to.bank, to.program), (0, 20));
+    }
+
+    #[test]
+    fn parse_move_should_fail_when_separator_is_missing() {
+        // given / when
+        let result = parse_move("8:6");
+
+        // then
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rename_should_keep_spaces_in_name_when_text_is_valid() {
+        // given / when
+        let (spec, name) = parse_rename("0:0=Concert Grand").unwrap();
+
+        // then
+        assert_eq!((spec.bank, spec.program), (0, 0));
+        assert_eq!(name, "Concert Grand");
+    }
+
+    #[test]
+    fn parse_rename_should_fail_when_name_is_empty() {
+        // given / when
+        let result = parse_rename("0:0=  ");
+
+        // then
+        assert!(result.is_err());
     }
 
     #[test]
