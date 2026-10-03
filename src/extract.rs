@@ -24,6 +24,10 @@ pub struct Options {
     pub renumber: bool,
     /// Replace the output's `INAM` (bank name); `None` keeps the original.
     pub rename: Option<String>,
+    /// Salvage mode: drop dangling references and clamp out-of-range sample
+    /// offsets instead of failing — for extracting what is recoverable from
+    /// fonts that do not pass validation (CLI: `--force`).
+    pub salvage: bool,
 }
 
 /// Extracts the presets matched by `selection` into a new font.
@@ -41,20 +45,21 @@ pub fn extract(
     options: &Options,
 ) -> Result<SoundFont, Error> {
     let kept_presets = selected_presets(font, selection)?;
-    let kept_instruments = reachable_instruments(font, &kept_presets)?;
-    let kept_samples = reachable_samples(font, &kept_instruments)?;
+    let kept_instruments = reachable_instruments(font, &kept_presets, options.salvage)?;
+    let kept_samples = reachable_samples(font, &kept_instruments, options.salvage)?;
 
     let instrument_map = index_map(&kept_instruments)?;
     let sample_map = index_map(&kept_samples)?;
 
-    let (samples, sample_data, sample_data_24) = rebuild_samples(font, &kept_samples, &sample_map)?;
+    let (samples, sample_data, sample_data_24) =
+        rebuild_samples(font, &kept_samples, &sample_map, options.salvage)?;
 
     Ok(SoundFont {
         info: stamped_info(&font.info, options.rename.as_deref()),
         sample_data,
         sample_data_24,
         presets: rebuild_presets(font, &kept_presets, &instrument_map, options)?,
-        instruments: rebuild_instruments(font, &kept_instruments, &sample_map)?,
+        instruments: rebuild_instruments(font, &kept_instruments, &sample_map, options.salvage)?,
         samples,
     })
 }
@@ -179,11 +184,15 @@ fn selected_presets(font: &SoundFont, selection: &Selection) -> Result<Vec<usize
 fn reachable_instruments(
     font: &SoundFont,
     kept_presets: &[usize],
+    salvage: bool,
 ) -> Result<BTreeSet<usize>, Error> {
     let mut kept = BTreeSet::new();
     for &preset_index in kept_presets {
         for instrument_index in instrument_refs(&font.presets[preset_index]) {
             if instrument_index >= font.instruments.len() {
+                if salvage {
+                    continue; // dangling reference; the gen is dropped on remap
+                }
                 return Err(Error::IndexOutOfBounds {
                     what: "preset instrument reference",
                     index: instrument_index,
@@ -199,11 +208,15 @@ fn reachable_instruments(
 fn reachable_samples(
     font: &SoundFont,
     kept_instruments: &BTreeSet<usize>,
+    salvage: bool,
 ) -> Result<BTreeSet<usize>, Error> {
     let mut kept = BTreeSet::new();
     for &instrument_index in kept_instruments {
         for sample_index in sample_refs(&font.instruments[instrument_index]) {
             if sample_index >= font.samples.len() {
+                if salvage {
+                    continue; // dangling reference; the gen is dropped on remap
+                }
                 return Err(Error::IndexOutOfBounds {
                     what: "instrument sample reference",
                     index: sample_index,
@@ -235,6 +248,7 @@ fn remap_zones(
     ref_oper: u16,
     map: &BTreeMap<usize, u16>,
     what: &'static str,
+    salvage: bool,
 ) -> Result<Vec<Zone>, Error> {
     zones
         .iter()
@@ -254,18 +268,20 @@ fn remap_zones(
                     if Some(position) != last_ref {
                         return None;
                     }
-                    Some(
-                        map.get(&usize::from(generator.amount))
-                            .map(|&new| crate::model::Generator {
-                                oper: ref_oper,
-                                amount: new,
-                            })
-                            .ok_or(Error::IndexOutOfBounds {
-                                what,
-                                index: usize::from(generator.amount),
-                                max: map.len().saturating_sub(1),
-                            }),
-                    )
+                    match map.get(&usize::from(generator.amount)) {
+                        Some(&new) => Some(Ok(crate::model::Generator {
+                            oper: ref_oper,
+                            amount: new,
+                        })),
+                        // Dangling reference: dropping the generator turns the
+                        // zone into one synths ignore, keeping the rest alive.
+                        None if salvage => None,
+                        None => Some(Err(Error::IndexOutOfBounds {
+                            what,
+                            index: usize::from(generator.amount),
+                            max: map.len().saturating_sub(1),
+                        })),
+                    }
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             Ok(Zone {
@@ -305,6 +321,7 @@ fn rebuild_presets(
                     GEN_INSTRUMENT,
                     instrument_map,
                     "preset instrument reference",
+                    options.salvage,
                 )?,
                 ..preset.clone()
             })
@@ -316,6 +333,7 @@ fn rebuild_instruments(
     font: &SoundFont,
     kept_instruments: &BTreeSet<usize>,
     sample_map: &BTreeMap<usize, u16>,
+    salvage: bool,
 ) -> Result<Vec<Instrument>, Error> {
     kept_instruments
         .iter()
@@ -328,6 +346,7 @@ fn rebuild_instruments(
                     GEN_SAMPLE_ID,
                     sample_map,
                     "instrument sample reference",
+                    salvage,
                 )?,
             })
         })
@@ -340,6 +359,7 @@ fn rebuild_samples(
     font: &SoundFont,
     kept_samples: &BTreeSet<usize>,
     sample_map: &BTreeMap<usize, u16>,
+    salvage: bool,
 ) -> Result<RebuiltSamples, Error> {
     let mut headers = Vec::with_capacity(kept_samples.len());
     let mut data = Vec::new();
@@ -351,7 +371,14 @@ fn rebuild_samples(
         let mut header = sample.clone();
         remap_or_sanitize_link(font, index, &mut header, sample_map)?;
         if !sample.is_rom() {
-            relocate_sample(font, sample, &mut header, &mut data, data_24.as_mut())?;
+            relocate_sample(
+                font,
+                sample,
+                &mut header,
+                &mut data,
+                data_24.as_mut(),
+                salvage,
+            )?;
         }
         headers.push(header);
     }
@@ -388,9 +415,16 @@ fn relocate_sample(
     header: &mut SampleHeader,
     data: &mut Vec<u8>,
     data_24: Option<&mut Vec<u8>>,
+    salvage: bool,
 ) -> Result<(), Error> {
-    let start = sample.start as usize;
-    let end = sample.end as usize;
+    let (start, end) = if salvage {
+        // Clamp out-of-range offsets to the audio that actually exists.
+        let total = font.sample_points();
+        let start = (sample.start as usize).min(total);
+        (start, (sample.end as usize).clamp(start, total))
+    } else {
+        (sample.start as usize, sample.end as usize)
+    };
     let pcm = font
         .sample_data
         .get(start * 2..end * 2)
@@ -416,8 +450,9 @@ fn relocate_sample(
         data_24.extend_from_slice(&[0; GUARD_POINTS]);
     }
     header.start = new_start;
+    let kept_points = u32::try_from(end - start).map_err(|_| Error::TooLarge("smpl"))?;
     header.end = new_start
-        .checked_add(sample.len_points())
+        .checked_add(kept_points)
         .ok_or(Error::TooLarge("smpl"))?;
     header.start_loop = shift_point(sample.start_loop, sample.start, new_start);
     header.end_loop = shift_point(sample.end_loop, sample.start, new_start);
@@ -857,6 +892,68 @@ mod tests {
 
         // then
         assert_eq!(result.name(), font.name());
+    }
+
+    #[test]
+    fn extract_should_drop_dangling_reference_when_salvage_enabled() {
+        // given: a preset pointing at instrument 99, which does not exist
+        let mut font = test_font();
+        font.presets[0].zones[0].gens[0].amount = 99;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then: the dangling generator is gone and the output is clean
+        assert_eq!(result.presets.len(), 1);
+        assert_eq!(result.presets[0].zones[0].instrument_ref(), None);
+        assert_eq!(result.instruments, vec![]);
+        assert!(!has_errors(&validate(&result)));
+    }
+
+    #[test]
+    fn extract_should_clamp_sample_range_when_salvage_enabled() {
+        // given: a sample claiming audio beyond the end of the data
+        let mut font = test_font();
+        let original_start = font.samples[0].start;
+        font.samples[0].end = u32::MAX;
+        font.samples[0].end_loop = original_start + 10;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then: clamped to the available points, output validates
+        let total = u32::try_from(font.sample_points()).unwrap();
+        let kept = &result.samples[0];
+        assert_eq!(kept.start, 0);
+        assert_eq!(kept.end, total - original_start);
+        assert!(!has_errors(&validate(&result)));
+    }
+
+    #[test]
+    fn extract_should_drop_dangling_sample_reference_when_salvage_enabled() {
+        // given: an instrument zone pointing at sample 99
+        let mut font = test_font();
+        font.instruments[0].zones[0].gens[0].amount = 99;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then
+        assert_eq!(result.instruments[0].zones[0].sample_ref(), None);
+        assert_eq!(result.samples, vec![]);
+        assert!(!has_errors(&validate(&result)));
     }
 
     #[test]
