@@ -10,7 +10,8 @@ use std::fmt;
 use crate::model::{GEN_INSTRUMENT, GEN_SAMPLE_ID, SoundFont};
 
 /// How severe an [`Issue`] is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Breaks playback or extraction.
     Error,
@@ -19,7 +20,7 @@ pub enum Severity {
 }
 
 /// A single finding produced by [`validate`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Issue {
     /// Severity of the finding.
     pub severity: Severity,

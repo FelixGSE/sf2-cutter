@@ -107,7 +107,7 @@ fn extractor_should_produce_small_valid_font_when_matching_piano() {
     selection.add_pattern("piano");
 
     // when
-    let result = extract(&font, &selection, Options::default()).unwrap();
+    let result = extract(&font, &selection, &Options::default()).unwrap();
     let output = write::write(&result).unwrap();
     let reparsed = parse::parse(&output).unwrap();
 
@@ -147,7 +147,7 @@ fn fluidsynth_should_load_extracted_font_when_available() {
     let font = parse::parse(&bytes).unwrap();
     let mut selection = Selection::new();
     selection.add_pattern("piano");
-    let result = extract(&font, &selection, Options::default()).unwrap();
+    let result = extract(&font, &selection, &Options::default()).unwrap();
     let path = std::env::temp_dir().join("sf2-cutter-pianos-test.sf2");
     std::fs::write(&path, write::write(&result).unwrap()).unwrap();
 
