@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
 
 use sf2_cutter::extract::{self, Options};
 use sf2_cutter::model::{Preset, SoundFont};
@@ -111,6 +111,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate shell completions on stdout
+    Completions {
+        /// Target shell
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page (roff) on stdout
+    #[command(hide = true)]
+    Man,
 }
 
 type CliResult = Result<ExitCode, Box<dyn std::error::Error>>;
@@ -175,6 +184,21 @@ fn run(cli: Cli) -> CliResult {
             renames,
             json,
         }),
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "sf2-cutter",
+                &mut std::io::stdout(),
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Man => {
+            let mut page = Vec::new();
+            clap_mangen::Man::new(Cli::command()).render(&mut page)?;
+            emit(&String::from_utf8_lossy(&page))?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

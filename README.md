@@ -96,5 +96,16 @@ The test suite includes property-based tests (random fonts, round-trip and extra
 invariants) and, when fluidsynth is on PATH, renders an extracted font to WAV and asserts
 the audio is not silence.
 
+Shell completions and a man page are built in:
+
+```sh
+sf2-cutter completions bash > /etc/bash_completion.d/sf2-cutter   # or zsh/fish/...
+sf2-cutter man | man -l -
+```
+
+Releases are built automatically for Linux (x86_64/aarch64), macOS (arm64), and Windows
+when a `v*` tag is pushed. Dependency licenses and advisories are checked in CI with
+cargo-deny.
+
 See `CLAUDE.md` for architecture and the mandatory test conventions
 (given/when/then structure, `<subject>_should_<outcome>_when_<condition>` naming).
