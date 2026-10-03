@@ -37,6 +37,9 @@ sf2-cutter list FluidR3_GM.sf2 --json | jq '.presets[0]'
 
 # Rename the extracted bank
 sf2-cutter extract FluidR3_GM.sf2 -m piano --name "Just Pianos" -o pianos.sf2
+
+# Merge several fonts into one (presets keep their bank:prog addresses)
+sf2-cutter merge pianos.sf2 drums.sf2 --name "My Rig" -o rig.sf2
 ```
 
 Selection criteria:

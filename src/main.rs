@@ -13,7 +13,7 @@ use sf2_cutter::extract::{self, Options};
 use sf2_cutter::model::{Preset, SoundFont};
 use sf2_cutter::select::{Recipe, Selection};
 use sf2_cutter::validate::{Issue, Severity, has_errors, validate};
-use sf2_cutter::{parse, write};
+use sf2_cutter::{merge, parse, write};
 
 #[derive(Parser)]
 #[command(
@@ -79,6 +79,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Merge several .sf2 files into one (presets keep their addresses)
+    Merge {
+        /// Input .sf2 files, merged in order
+        #[arg(required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
+        /// Output .sf2 file
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Rename the output bank (sets the INAM chunk)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Emit a machine-readable JSON report on stdout
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 type CliResult = Result<ExitCode, Box<dyn std::error::Error>>;
@@ -122,6 +137,12 @@ fn run(cli: Cli) -> CliResult {
             name,
             json,
         }),
+        Command::Merge {
+            inputs,
+            output,
+            name,
+            json,
+        } => cmd_merge(&inputs, &output, name.as_deref(), json),
     }
 }
 
@@ -503,6 +524,56 @@ fn extract_json_report(
         predicted_size,
         written,
     })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Loads, validates, merges, re-validates, and writes several fonts.
+fn cmd_merge(inputs: &[PathBuf], output: &Path, name: Option<&str>, json: bool) -> CliResult {
+    let mut fonts = Vec::with_capacity(inputs.len());
+    let mut input_size = 0;
+    for input in inputs {
+        let (font, size) = load_font(input)?;
+        let issues = validate(&font);
+        if has_errors(&issues) {
+            print_issues(&issues);
+            return Err(format!("{} fails validation; aborting", input.display()).into());
+        }
+        if !json {
+            print_issues(&issues);
+        }
+        fonts.push(font);
+        input_size += size;
+    }
+
+    let result = merge::merge(&fonts, name)?;
+    let output_issues = validate(&result);
+    if has_errors(&output_issues) {
+        print_issues(&output_issues);
+        return Err("internal error: merged font fails validation; not writing".into());
+    }
+    let predicted_size = write::file_size(&result);
+    write_output(output, &result)?;
+    if json {
+        emit_json(&ExtractJson {
+            kept: (0..result.presets.len())
+                .map(|index| preset_json(&result, index))
+                .collect(),
+            instruments: result.instruments.len(),
+            samples: result.samples.len(),
+            input_size,
+            predicted_size,
+            written: Some(output.display().to_string()),
+        })?;
+    } else {
+        emit(&format!(
+            "merged {} fonts: {} presets, {} instruments, {} samples\nsize: {input_size} -> {predicted_size} bytes\nwrote {}\n",
+            fonts.len(),
+            result.presets.len(),
+            result.instruments.len(),
+            result.samples.len(),
+            output.display()
+        ))?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 
