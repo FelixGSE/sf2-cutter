@@ -11,6 +11,7 @@
 pub mod builder;
 pub mod error;
 pub mod extract;
+pub mod merge;
 pub mod model;
 pub mod parse;
 pub mod riff;

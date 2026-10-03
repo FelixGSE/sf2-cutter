@@ -118,7 +118,7 @@ fn collect_with_links(font: &SoundFont, index: usize, out: &mut BTreeSet<usize>)
 /// Clones the `INFO` chunks with provenance applied: optional `INAM`
 /// replacement and the tool name appended to `ISFT` (the colon-separated
 /// tool-chain convention, e.g. `SFEDT v1.28:SWAMI v0.9.4:sf2-cutter v0.1.0`).
-fn stamped_info(
+pub(crate) fn stamped_info(
     info: &[crate::model::InfoChunk],
     rename: Option<&str>,
 ) -> Vec<crate::model::InfoChunk> {

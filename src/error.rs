@@ -53,6 +53,9 @@ pub enum Error {
     /// The selection matched no presets.
     #[error("selection matched no presets")]
     EmptySelection,
+    /// `merge` was called with an empty input list.
+    #[error("merge needs at least one input font")]
+    NothingToMerge,
     /// Renumbering would push a bank's program numbers past the MIDI limit.
     #[error("bank {bank} has more than 128 presets; cannot renumber into 0..=127")]
     RenumberOverflow {
