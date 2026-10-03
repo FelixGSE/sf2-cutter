@@ -1,0 +1,6 @@
+# cargo-mutants configuration.
+# The CLI entry point is thin glue (arg parsing, printing, interactive prompts)
+# and is exercised by integration tests only where practical; mutation testing
+# focuses on the library, where the format and extraction logic live.
+exclude_globs = ["src/main.rs"]
+timeout_multiplier = 1.5

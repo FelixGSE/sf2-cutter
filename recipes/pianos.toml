@@ -1,0 +1,6 @@
+# Extraction recipe: all acoustic/electric pianos from a GM bank.
+# Usage: sf2-cutter extract FluidR3_GM.sf2 --config recipes/pianos.toml -o pianos.sf2
+match = ["*piano*", "*grand*", "rhodes", "legend ep*", "honky tonk", "clavinet", "harpsichord"]
+presets = []
+keep_drums = false
+renumber = false

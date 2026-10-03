@@ -1,0 +1,74 @@
+# sf2-cutter
+
+Cut SoundFont 2 (`.sf2`) files down to the presets you actually need. Point it at a big
+GM bank (e.g. Debian's 141 MB `FluidR3_GM.sf2`), pick the sounds you want, and get a small,
+valid `.sf2` containing only those presets, the instruments and samples they reach, and
+nothing else.
+
+The SF2 parser and writer are hand-rolled (no soundfont crates). A full
+parse → write round trip of FluidR3_GM.sf2 is byte-identical.
+
+## Usage
+
+```sh
+# What's inside?
+sf2-cutter list FluidR3_GM.sf2
+
+# Integrity check (exit code 1 on errors, warnings are tolerated)
+sf2-cutter validate FluidR3_GM.sf2
+
+# Extract everything whose name contains "piano" (case-insensitive)
+sf2-cutter extract FluidR3_GM.sf2 --match piano -o pianos.sf2
+
+# See what would happen first
+sf2-cutter extract FluidR3_GM.sf2 --match piano --dry-run
+
+# Precise MIDI addressing, several criteria combine as a union
+sf2-cutter extract FluidR3_GM.sf2 -p 0:0 -p 0:4 --match "*organ*" --keep-drums -o subset.sf2
+
+# Pick interactively (other flags pre-check the list)
+sf2-cutter extract FluidR3_GM.sf2 --match piano --interactive -o subset.sf2
+
+# Reusable extraction recipe
+sf2-cutter extract FluidR3_GM.sf2 --config recipes/pianos.toml -o pianos.sf2
+```
+
+Selection criteria:
+
+- `--match PATTERN` — case-insensitive name match; plain text matches as substring,
+  `*` wildcards match the whole name (`"*grand*"`).
+- `--preset BANK:PROG` — exact MIDI address (`0:0`; drums live on bank `128`).
+- `--config FILE` — TOML recipe, see below.
+- `--keep-drums` — also keep every preset on percussion bank 128.
+- `--renumber` — compact program numbers per bank starting at 0 (default keeps the
+  original numbers so existing MIDI files keep working).
+
+Recipe format (all keys optional, combined with the command-line flags):
+
+```toml
+match = ["*piano*", "rhodes"]
+presets = ["0:0", "128:0"]
+keep_drums = false
+renumber = false
+```
+
+Extraction notes:
+
+- Only *mutual* stereo links are treated as real pairs and kept together. One-directional
+  links (FluidR3 types 970 samples left/right but points all their links at sample 0) are
+  treated as broken and sanitised to mono headers in the output.
+- Every output is re-validated before it is written; `validate` runs the same checks.
+
+## Development
+
+Open the folder in VS Code and choose **Reopen in Container** (Rust devcontainer with
+rustfmt, clippy, rust-analyzer, GitHub CLI, Claude Code; runs as unprivileged `dev` user).
+
+```sh
+make check     # full gate: fmt-check, clippy -D warnings, tests, coverage floor (80% lines)
+make mutants   # mutation testing (slow; run before merging logic changes)
+cargo test -- --ignored   # real-font tests; need FluidR3_GM.sf2 in the repo root
+```
+
+See `CLAUDE.md` for architecture and the mandatory test conventions
+(given/when/then structure, `<subject>_should_<outcome>_when_<condition>` naming).
