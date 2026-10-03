@@ -52,6 +52,10 @@ For fonts that fail validation, `extract --force` salvages what is reachable: da
 instrument/sample references are dropped and out-of-range sample offsets are clamped, and
 the output is still guaranteed to validate cleanly.
 
+SF3 fonts (Ogg-Vorbis-compressed, e.g. MuseScore_General.sf3) can be used as extraction
+*inputs*: kept samples are decoded to PCM and the output is a plain sf2 playable anywhere
+(enabled by the default `sf3` cargo feature; writing SF3 is not supported).
+
 Selection criteria:
 
 - `--match PATTERN` — case-insensitive name match; plain text matches as substring,

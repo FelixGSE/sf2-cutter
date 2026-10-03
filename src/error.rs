@@ -92,4 +92,15 @@ pub enum Error {
     /// A recipe (config file) could not be parsed.
     #[error("invalid recipe: {0}")]
     InvalidRecipe(String),
+    /// The font contains SF3-compressed samples but the `sf3` feature is off.
+    #[error("font contains compressed (SF3) samples; build with the `sf3` feature")]
+    Sf3Unsupported,
+    /// An SF3-compressed sample could not be decoded.
+    #[error("failed to decode compressed sample `{name}`: {detail}")]
+    Sf3Decode {
+        /// Name of the offending sample.
+        name: String,
+        /// Decoder error detail.
+        detail: String,
+    },
 }

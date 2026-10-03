@@ -22,6 +22,11 @@ pub const SAMPLE_TYPE_ROM: u16 = 0x8000;
 /// `sfSampleType` bits that indicate the sample participates in a linked
 /// (stereo or chained) pair: `rightSample` (2), `leftSample` (4), `linkedSample` (8).
 pub const SAMPLE_TYPE_LINKED_MASK: u16 = 2 | 4 | 8;
+/// `sfSampleType` flag marking an Ogg-Vorbis-compressed sample (the SF3
+/// convention established by `MuseScore`; `dwStart`/`dwEnd` are then byte
+/// offsets of the compressed stream, and loop points are relative to the
+/// decoded sample).
+pub const SAMPLE_TYPE_COMPRESSED: u16 = 0x10;
 
 /// On-disk record sizes in bytes, used by the parser and writer.
 pub(crate) mod record {
@@ -190,6 +195,12 @@ impl SampleHeader {
     #[must_use]
     pub fn is_linked(&self) -> bool {
         self.sample_type & SAMPLE_TYPE_LINKED_MASK != 0
+    }
+
+    /// Whether the sample data is an SF3 Ogg-Vorbis stream.
+    #[must_use]
+    pub fn is_compressed(&self) -> bool {
+        self.sample_type & SAMPLE_TYPE_COMPRESSED != 0
     }
 
     /// Length of the sample in sample points.
@@ -391,6 +402,13 @@ mod tests {
         // when / then
         assert!(header.is_rom());
         assert!(!sample_header_with_type(1).is_rom());
+    }
+
+    #[test]
+    fn sample_header_should_report_compressed_when_sf3_flag_set() {
+        // given / when / then
+        assert!(sample_header_with_type(SAMPLE_TYPE_COMPRESSED | 1).is_compressed());
+        assert!(!sample_header_with_type(1).is_compressed());
     }
 
     #[test]

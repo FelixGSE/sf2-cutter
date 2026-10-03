@@ -200,13 +200,57 @@ fn check_zone_refs(
 
 fn check_samples(font: &SoundFont, issues: &mut Vec<Issue>) {
     let total_points = font.sample_points() as u64;
+    let total_bytes = font.sample_data.len() as u64;
+    let major = font.version().map(|(major, _)| major);
     for (index, sample) in font.samples.iter().enumerate() {
         let label = format!("sample {index} `{}`", sample.name);
         if sample.is_rom() {
             continue;
         }
-        check_sample_range(sample, total_points, &label, issues);
+        if sample.is_compressed() {
+            check_compressed_range(sample, total_bytes, &label, issues);
+            if major != Some(3) {
+                warning(
+                    issues,
+                    format!(
+                        "{label}: compressed (SF3) sample in a version-{} font",
+                        major.map_or_else(|| "?".to_string(), |m| m.to_string())
+                    ),
+                );
+            }
+        } else {
+            check_sample_range(sample, total_points, &label, issues);
+        }
         check_sample_link(font, index, sample, &label, issues);
+    }
+}
+
+/// For SF3-compressed samples, `start`/`end` are byte offsets of the Ogg
+/// stream; loop points are relative to the decoded audio and not checkable
+/// without decoding.
+fn check_compressed_range(
+    sample: &crate::model::SampleHeader,
+    total_bytes: u64,
+    label: &str,
+    issues: &mut Vec<Issue>,
+) {
+    if u64::from(sample.end) > total_bytes {
+        error(
+            issues,
+            format!(
+                "{label}: compressed stream end {} exceeds sample data ({total_bytes} bytes)",
+                sample.end
+            ),
+        );
+    }
+    if sample.start > sample.end {
+        error(
+            issues,
+            format!(
+                "{label}: compressed stream start {} is after end {}",
+                sample.start, sample.end
+            ),
+        );
     }
 }
 
@@ -681,6 +725,48 @@ mod tests {
         // then
         assert!(!has_errors(&issues));
         assert!(issues.iter().any(|i| i.message.contains("sm24")));
+    }
+
+    #[test]
+    fn validate_should_check_byte_range_when_sample_is_compressed() {
+        // given: compressed start/end are byte offsets into smpl
+        let mut font = test_font();
+        font.info[0].data = vec![3, 0, 0, 0];
+        let total_bytes = u32::try_from(font.sample_data.len()).unwrap();
+        font.samples[0].sample_type = crate::model::SAMPLE_TYPE_COMPRESSED | 1;
+        font.samples[0].start = 0;
+        font.samples[0].end = total_bytes;
+
+        // when
+        let issues = validate(&font);
+
+        // then: no errors, and no complaint about the in-range stream (the
+        // generic major-version-3 warning is expected and unrelated)
+        assert!(!has_errors(&issues));
+        assert!(!issues.iter().any(|i| i.message.contains("compressed")));
+
+        // and an out-of-range stream is an error
+        font.samples[0].end = total_bytes + 1;
+        assert!(has_errors(&validate(&font)));
+    }
+
+    #[test]
+    fn validate_should_warn_when_compressed_sample_in_version_2_font() {
+        // given: fixture is a 2.04 font
+        let mut font = test_font();
+        font.samples[0].sample_type = crate::model::SAMPLE_TYPE_COMPRESSED | 1;
+        font.samples[0].start = 0;
+        font.samples[0].end = 10;
+
+        // when
+        let issues = validate(&font);
+
+        // then
+        assert!(!has_errors(&issues));
+        assert!(issues.iter().any(|i| {
+            i.message
+                .contains("compressed (SF3) sample in a version-2 font")
+        }));
     }
 
     #[test]

@@ -54,14 +54,16 @@ pub fn extract(
     let (samples, sample_data, sample_data_24) =
         rebuild_samples(font, &kept_samples, &sample_map, options.salvage)?;
 
-    Ok(SoundFont {
+    let mut out = SoundFont {
         info: stamped_info(&font.info, options.rename.as_deref()),
         sample_data,
         sample_data_24,
         presets: rebuild_presets(font, &kept_presets, &instrument_map, options)?,
         instruments: rebuild_instruments(font, &kept_instruments, &sample_map, options.salvage)?,
         samples,
-    })
+    };
+    downgrade_version_when_decompressed(&mut out);
+    Ok(out)
 }
 
 /// Unique bytes of non-ROM sample data reachable from one preset; the basis
@@ -370,7 +372,16 @@ fn rebuild_samples(
         let sample = &font.samples[index];
         let mut header = sample.clone();
         remap_or_sanitize_link(font, index, &mut header, sample_map)?;
-        if !sample.is_rom() {
+        if sample.is_compressed() && !sample.is_rom() {
+            relocate_compressed(
+                font,
+                sample,
+                &mut header,
+                &mut data,
+                data_24.as_mut(),
+                salvage,
+            )?;
+        } else if !sample.is_rom() {
             relocate_sample(
                 font,
                 sample,
@@ -457,6 +468,97 @@ fn relocate_sample(
     header.start_loop = shift_point(sample.start_loop, sample.start, new_start);
     header.end_loop = shift_point(sample.end_loop, sample.start, new_start);
     Ok(())
+}
+
+/// Relocates an SF3-compressed sample by decoding its Ogg-Vorbis stream
+/// (`start`/`end` are byte offsets) into plain PCM. Loop points in SF3 are
+/// relative to the decoded sample, so they become absolute here; the
+/// compressed flag is cleared. In salvage mode an undecodable stream yields
+/// an empty sample instead of failing.
+#[cfg(feature = "sf3")]
+fn relocate_compressed(
+    font: &SoundFont,
+    sample: &SampleHeader,
+    header: &mut SampleHeader,
+    data: &mut Vec<u8>,
+    data_24: Option<&mut Vec<u8>>,
+    salvage: bool,
+) -> Result<(), Error> {
+    let (start, end) = if salvage {
+        let total = font.sample_data.len();
+        let start = (sample.start as usize).min(total);
+        (start, (sample.end as usize).clamp(start, total))
+    } else {
+        (sample.start as usize, sample.end as usize)
+    };
+    let stream = font
+        .sample_data
+        .get(start..end)
+        .ok_or(Error::IndexOutOfBounds {
+            what: "compressed sample data range",
+            index: end,
+            max: font.sample_data.len(),
+        })?;
+    let pcm = match crate::sf3::decode_ogg(&sample.name.to_display(), stream) {
+        Ok(pcm) => pcm,
+        Err(_) if salvage => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    place_decoded(sample, header, &pcm, data, data_24)
+}
+
+/// Stub without the `sf3` feature: compressed samples cannot be extracted.
+#[cfg(not(feature = "sf3"))]
+fn relocate_compressed(
+    _font: &SoundFont,
+    _sample: &SampleHeader,
+    _header: &mut SampleHeader,
+    _data: &mut Vec<u8>,
+    _data_24: Option<&mut Vec<u8>>,
+    _salvage: bool,
+) -> Result<(), Error> {
+    Err(Error::Sf3Unsupported)
+}
+
+/// Appends decoded PCM (plus guard points) and rewrites the header as a
+/// plain uncompressed sample: absolute offsets, loops made absolute from
+/// SF3's decoded-sample-relative convention, compressed flag cleared.
+fn place_decoded(
+    sample: &SampleHeader,
+    header: &mut SampleHeader,
+    pcm: &[i16],
+    data: &mut Vec<u8>,
+    data_24: Option<&mut Vec<u8>>,
+) -> Result<(), Error> {
+    let new_start = u32::try_from(data.len() / 2).map_err(|_| Error::TooLarge("smpl"))?;
+    for value in pcm {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    data.extend_from_slice(&[0; GUARD_POINTS * 2]);
+    if let Some(data_24) = data_24 {
+        // Decoded audio is 16-bit; the 24-bit extension gets zero LSBs.
+        data_24.extend(std::iter::repeat_n(0, pcm.len() + GUARD_POINTS));
+    }
+    let len = u32::try_from(pcm.len()).map_err(|_| Error::TooLarge("smpl"))?;
+    header.start = new_start;
+    header.end = new_start.checked_add(len).ok_or(Error::TooLarge("smpl"))?;
+    header.start_loop = new_start.saturating_add(sample.start_loop).min(header.end);
+    header.end_loop = new_start.saturating_add(sample.end_loop).min(header.end);
+    header.sample_type &= !crate::model::SAMPLE_TYPE_COMPRESSED;
+    Ok(())
+}
+
+/// Once no compressed samples remain, an SF3 container is a plain sf2 file;
+/// lower `ifil` so ordinary synthesisers accept it.
+fn downgrade_version_when_decompressed(font: &mut SoundFont) {
+    let is_sf3 = font.version().is_some_and(|(major, _)| major >= 3);
+    let any_compressed = font.samples.iter().any(SampleHeader::is_compressed);
+    if is_sf3
+        && !any_compressed
+        && let Some(chunk) = font.info.iter_mut().find(|c| c.id == *b"ifil")
+    {
+        chunk.data = vec![2, 0, 4, 0];
+    }
 }
 
 /// Moves a loop point by the sample's relocation offset, clamping at zero in
@@ -953,6 +1055,107 @@ mod tests {
         // then
         assert_eq!(result.instruments[0].zones[0].sample_ref(), None);
         assert_eq!(result.samples, vec![]);
+        assert!(!has_errors(&validate(&result)));
+    }
+
+    fn compressed_header(start: u32, end: u32, loops: (u32, u32)) -> SampleHeader {
+        SampleHeader {
+            name: crate::model::FixedName::from_text("ogg"),
+            start,
+            end,
+            start_loop: loops.0,
+            end_loop: loops.1,
+            sample_rate: 44_100,
+            original_pitch: 60,
+            pitch_correction: 0,
+            sample_link: 0,
+            sample_type: crate::model::SAMPLE_TYPE_COMPRESSED | 1,
+        }
+    }
+
+    #[test]
+    fn place_decoded_should_absolutise_loops_when_sample_was_compressed() {
+        // given: SF3 loop points are relative to the decoded sample
+        let sample = compressed_header(1000, 2000, (10, 90));
+        let mut header = sample.clone();
+        let mut data = vec![0; 8]; // 4 points already written
+        let pcm = vec![5i16; 100];
+
+        // when
+        place_decoded(&sample, &mut header, &pcm, &mut data, None).unwrap();
+
+        // then
+        assert_eq!(header.start, 4);
+        assert_eq!(header.end, 104);
+        assert_eq!(header.start_loop, 14);
+        assert_eq!(header.end_loop, 94);
+        assert!(!header.is_compressed());
+        assert_eq!(data.len(), 8 + (100 + GUARD_POINTS) * 2);
+    }
+
+    #[test]
+    fn place_decoded_should_clamp_loops_when_they_exceed_decoded_audio() {
+        // given
+        let sample = compressed_header(0, 10, (500, 900));
+        let mut header = sample.clone();
+        let mut data = Vec::new();
+
+        // when
+        place_decoded(&sample, &mut header, &[1i16; 20], &mut data, None).unwrap();
+
+        // then
+        assert_eq!(header.start_loop, 20);
+        assert_eq!(header.end_loop, 20);
+    }
+
+    #[cfg(feature = "sf3")]
+    #[test]
+    fn extract_should_fail_when_compressed_stream_is_garbage() {
+        // given: a sample flagged compressed whose bytes are not Ogg
+        let mut builder = SoundFontBuilder::new("sf3ish");
+        let sample = builder.add_sample("fake", &[9; 100], 44_100, 60).unwrap();
+        let instrument = builder
+            .add_instrument("I", vec![sample_zone(sample)])
+            .unwrap();
+        builder.add_preset("Fake Ogg", 0, 0, vec![instrument_zone(instrument)]);
+        let mut font = builder.build();
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        // start/end become byte offsets for compressed samples
+        font.samples[0].start = 0;
+        font.samples[0].end = 200;
+
+        // when
+        let result = extract(&font, &select_pattern("fake"), &Options::default());
+
+        // then
+        assert!(matches!(result, Err(Error::Sf3Decode { .. })));
+    }
+
+    #[cfg(feature = "sf3")]
+    #[test]
+    fn extract_should_emit_empty_sample_when_compressed_stream_is_garbage_and_salvaging() {
+        // given
+        let mut builder = SoundFontBuilder::new("sf3ish");
+        let sample = builder.add_sample("fake", &[9; 100], 44_100, 60).unwrap();
+        let instrument = builder
+            .add_instrument("I", vec![sample_zone(sample)])
+            .unwrap();
+        builder.add_preset("Fake Ogg", 0, 0, vec![instrument_zone(instrument)]);
+        let mut font = builder.build();
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[0].start = 0;
+        font.samples[0].end = 200;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("fake"), &options).unwrap();
+
+        // then: empty but structurally sound
+        assert_eq!(result.samples[0].len_points(), 0);
+        assert!(!result.samples[0].is_compressed());
         assert!(!has_errors(&validate(&result)));
     }
 
