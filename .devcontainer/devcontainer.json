@@ -17,6 +17,7 @@
   ],
   "mounts": [
     "source=sf2-cutter-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+    "source=sf2-cutter-target,target=${containerWorkspaceFolder}/target,type=volume",
     "source=sf2-cutter-claude-config,target=/home/dev/.claude,type=volume",
     "source=sf2-cutter-gh-config,target=/home/dev/.config/gh,type=volume"
   ],
