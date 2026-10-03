@@ -18,10 +18,12 @@ use crate::model::{
 use crate::select::Selection;
 
 /// Extraction options.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Compact program numbers per bank, starting at 0, in original order.
     pub renumber: bool,
+    /// Replace the output's `INAM` (bank name); `None` keeps the original.
+    pub rename: Option<String>,
 }
 
 /// Extracts the presets matched by `selection` into a new font.
@@ -36,7 +38,7 @@ pub struct Options {
 pub fn extract(
     font: &SoundFont,
     selection: &Selection,
-    options: Options,
+    options: &Options,
 ) -> Result<SoundFont, Error> {
     let kept_presets = selected_presets(font, selection)?;
     let kept_instruments = reachable_instruments(font, &kept_presets)?;
@@ -48,7 +50,7 @@ pub fn extract(
     let (samples, sample_data, sample_data_24) = rebuild_samples(font, &kept_samples, &sample_map)?;
 
     Ok(SoundFont {
-        info: font.info.clone(),
+        info: stamped_info(&font.info, options.rename.as_deref()),
         sample_data,
         sample_data_24,
         presets: rebuild_presets(font, &kept_presets, &instrument_map, options)?,
@@ -110,6 +112,53 @@ fn collect_with_links(font: &SoundFont, index: usize, out: &mut BTreeSet<usize>)
             return;
         }
         next = font.mutual_link(current);
+    }
+}
+
+/// Clones the `INFO` chunks with provenance applied: optional `INAM`
+/// replacement and the tool name appended to `ISFT` (the colon-separated
+/// tool-chain convention, e.g. `SFEDT v1.28:SWAMI v0.9.4:sf2-cutter v0.1.0`).
+fn stamped_info(
+    info: &[crate::model::InfoChunk],
+    rename: Option<&str>,
+) -> Vec<crate::model::InfoChunk> {
+    let mut out: Vec<crate::model::InfoChunk> = info.to_vec();
+    if let Some(name) = rename {
+        set_info_text(&mut out, *b"INAM", name);
+    }
+    let tool = concat!("sf2-cutter v", env!("CARGO_PKG_VERSION"));
+    let existing = info
+        .iter()
+        .find(|c| c.id == *b"ISFT")
+        .map(|c| trim_info_text(&c.data))
+        .filter(|t| !t.is_empty());
+    let chain = match existing {
+        // ISFT is capped at 256 bytes including the terminator; fall back to
+        // the tool name alone when appending would overflow.
+        Some(prior) if prior.len() + 1 + tool.len() < 256 => format!("{prior}:{tool}"),
+        _ => tool.to_string(),
+    };
+    set_info_text(&mut out, *b"ISFT", &chain);
+    out
+}
+
+/// Text of an INFO chunk up to its first NUL.
+fn trim_info_text(data: &[u8]) -> String {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    String::from_utf8_lossy(&data[..end]).into_owned()
+}
+
+/// Replaces (or appends) an INFO chunk with NUL-terminated, even-length text.
+fn set_info_text(info: &mut Vec<crate::model::InfoChunk>, id: [u8; 4], text: &str) {
+    let mut data = text.as_bytes().to_vec();
+    data.push(0);
+    if data.len() % 2 == 1 {
+        data.push(0);
+    }
+    if let Some(chunk) = info.iter_mut().find(|c| c.id == id) {
+        chunk.data = data;
+    } else {
+        info.push(crate::model::InfoChunk { id, data });
     }
 }
 
@@ -231,7 +280,7 @@ fn rebuild_presets(
     font: &SoundFont,
     kept_presets: &[usize],
     instrument_map: &BTreeMap<usize, u16>,
-    options: Options,
+    options: &Options,
 ) -> Result<Vec<Preset>, Error> {
     let mut next_program: BTreeMap<u16, u16> = BTreeMap::new();
     kept_presets
@@ -388,6 +437,13 @@ mod tests {
     use crate::builder::{SoundFontBuilder, instrument_zone, sample_zone, test_font};
     use crate::validate::{has_errors, validate};
 
+    fn renumber_options() -> Options {
+        Options {
+            renumber: true,
+            ..Options::default()
+        }
+    }
+
     fn select_pattern(pattern: &str) -> Selection {
         let mut selection = Selection::new();
         selection.add_pattern(pattern);
@@ -400,7 +456,7 @@ mod tests {
         let font = test_font();
 
         // when
-        let result = extract(&font, &select_pattern("piano"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
 
         // then
         assert_eq!(result.presets.len(), 1);
@@ -417,7 +473,7 @@ mod tests {
         let font = test_font();
 
         // when
-        let result = extract(&font, &select_pattern("strings"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("strings"), &Options::default()).unwrap();
 
         // then
         assert_eq!(result.presets[0].bank, 0);
@@ -430,7 +486,7 @@ mod tests {
         let font = test_font();
 
         // when
-        let result = extract(&font, &select_pattern("strings"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("strings"), &Options::default()).unwrap();
 
         // then
         assert_eq!(result.presets[0].zones[0].instrument_ref(), Some(0));
@@ -456,7 +512,7 @@ mod tests {
         let font = builder.build();
 
         // when
-        let result = extract(&font, &select_pattern("lonely"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("lonely"), &Options::default()).unwrap();
 
         // then
         assert_eq!(result.samples.len(), 2);
@@ -471,7 +527,7 @@ mod tests {
         let font = test_font();
 
         // when
-        let result = extract(&font, &select_pattern("strings"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("strings"), &Options::default()).unwrap();
 
         // then
         let left = &result.samples[0];
@@ -496,7 +552,7 @@ mod tests {
             font.sample_data[original.start as usize * 2..original.end as usize * 2].to_vec();
 
         // when
-        let result = extract(&font, &select_pattern("piano"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
 
         // then
         assert_eq!(&result.sample_data[..expected_pcm.len()], &expected_pcm[..]);
@@ -513,7 +569,7 @@ mod tests {
         let font = test_font();
 
         // when
-        let result = extract(&font, &select_pattern("accordion"), Options::default());
+        let result = extract(&font, &select_pattern("accordion"), &Options::default());
 
         // then
         assert!(matches!(result, Err(Error::EmptySelection)));
@@ -528,7 +584,7 @@ mod tests {
         selection.set_keep_drums(true);
 
         // when
-        let result = extract(&font, &selection, Options { renumber: true }).unwrap();
+        let result = extract(&font, &selection, &renumber_options()).unwrap();
 
         // then: strings (bank 0) and drums (bank 128) each start at program 0
         assert_eq!(result.presets.len(), 2);
@@ -554,7 +610,7 @@ mod tests {
         font.sample_data.clear();
 
         // when
-        let result = extract(&font, &select_pattern("rom"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("rom"), &Options::default()).unwrap();
 
         // then: ROM offsets survive untouched and no audio is copied
         assert_eq!(result.samples[0].start, 5000);
@@ -569,7 +625,7 @@ mod tests {
         font.presets[0].zones[0].gens[0].amount = 999;
 
         // when
-        let result = extract(&font, &select_pattern("piano"), Options::default());
+        let result = extract(&font, &select_pattern("piano"), &Options::default());
 
         // then
         assert!(matches!(
@@ -611,7 +667,7 @@ mod tests {
         font.samples[usize::from(broken)].sample_link = unrelated;
 
         // when
-        let result = extract(&font, &select_pattern("broken"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("broken"), &Options::default()).unwrap();
 
         // then: the bogus target is not dragged in and the header is mono
         assert_eq!(result.samples.len(), 1);
@@ -634,7 +690,7 @@ mod tests {
         font.samples[usize::from(sample)].sample_link = sample;
 
         // when
-        let result = extract(&font, &select_pattern("selfie"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("selfie"), &Options::default()).unwrap();
 
         // then
         assert_eq!(result.samples.len(), 1);
@@ -675,7 +731,7 @@ mod tests {
         let font = builder.build();
 
         // when
-        let result = extract(&font, &select_pattern("dup"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("dup"), &Options::default()).unwrap();
 
         // then: only the last reference survives, remapped to the kept instrument
         assert_eq!(result.instruments.len(), 1);
@@ -700,7 +756,7 @@ mod tests {
         let font = builder.build();
 
         // when
-        let result = extract(&font, &select_pattern("p"), Options { renumber: true }).unwrap();
+        let result = extract(&font, &select_pattern("p"), &renumber_options()).unwrap();
 
         // then: exactly 128 programs, 0 through 127
         assert_eq!(result.presets.len(), 128);
@@ -718,7 +774,7 @@ mod tests {
         let font = builder.build();
 
         // when
-        let result = extract(&font, &select_pattern("p"), Options { renumber: true });
+        let result = extract(&font, &select_pattern("p"), &renumber_options());
 
         // then
         assert!(matches!(result, Err(Error::RenumberOverflow { bank: 0 })));
@@ -737,11 +793,70 @@ mod tests {
         font.sample_data_24 = Some(vec![0; 5]);
 
         // when
-        let result = extract(&font, &select_pattern("bad24"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("bad24"), &Options::default()).unwrap();
 
         // then: extraction succeeds and the bogus chunk is gone
         assert!(result.sample_data_24.is_none());
         assert_eq!(result.samples.len(), 1);
+    }
+
+    #[test]
+    fn extract_should_stamp_isft_when_output_is_built() {
+        // given: a font without any ISFT chunk
+        let font = test_font();
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
+
+        // then
+        let isft = result.info_chunk(*b"ISFT").unwrap();
+        let text = String::from_utf8_lossy(isft);
+        assert!(text.contains("sf2-cutter v"));
+    }
+
+    #[test]
+    fn extract_should_append_to_isft_chain_when_chunk_exists() {
+        // given: a font with a prior tool chain
+        let mut font = test_font();
+        font.info.push(crate::model::InfoChunk {
+            id: *b"ISFT",
+            data: b"SFEDT v1.28\0".to_vec(),
+        });
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
+
+        // then
+        let text = String::from_utf8_lossy(result.info_chunk(*b"ISFT").unwrap()).to_string();
+        assert!(text.starts_with("SFEDT v1.28:sf2-cutter v"));
+    }
+
+    #[test]
+    fn extract_should_replace_bank_name_when_rename_option_set() {
+        // given
+        let font = test_font();
+        let options = Options {
+            rename: Some("My Pianos".into()),
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then
+        assert_eq!(result.name().as_deref(), Some("My Pianos"));
+    }
+
+    #[test]
+    fn extract_should_keep_bank_name_when_rename_option_absent() {
+        // given
+        let font = test_font();
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
+
+        // then
+        assert_eq!(result.name(), font.name());
     }
 
     #[test]
@@ -768,7 +883,7 @@ mod tests {
             .collect();
 
         // when
-        let result = extract(&font, &select_pattern("keep"), Options::default()).unwrap();
+        let result = extract(&font, &select_pattern("keep"), &Options::default()).unwrap();
 
         // then
         let sliced = result.sample_data_24.unwrap();

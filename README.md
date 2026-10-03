@@ -31,6 +31,12 @@ sf2-cutter extract FluidR3_GM.sf2 --match piano --interactive -o subset.sf2
 
 # Reusable extraction recipe
 sf2-cutter extract FluidR3_GM.sf2 --config recipes/pianos.toml -o pianos.sf2
+
+# Machine-readable output for scripting (list, validate, extract)
+sf2-cutter list FluidR3_GM.sf2 --json | jq '.presets[0]'
+
+# Rename the extracted bank
+sf2-cutter extract FluidR3_GM.sf2 -m piano --name "Just Pianos" -o pianos.sf2
 ```
 
 Selection criteria:
@@ -58,6 +64,8 @@ Extraction notes:
   links (FluidR3 types 970 samples left/right but points all their links at sample 0) are
   treated as broken and sanitised to mono headers in the output.
 - Every output is re-validated before it is written; `validate` runs the same checks.
+- Outputs carry provenance: `sf2-cutter v<version>` is appended to the `ISFT` tool chain,
+  and `--name` replaces the bank name (`INAM`).
 
 ## Development
 

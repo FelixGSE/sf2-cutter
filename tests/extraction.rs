@@ -62,7 +62,7 @@ fn pipeline_should_produce_piano_only_font_when_pattern_matches_pianos() {
     selection.add_pattern("piano");
 
     // when
-    let result = extract(&font, &selection, Options::default()).unwrap();
+    let result = extract(&font, &selection, &Options::default()).unwrap();
     let output = write::write(&result).unwrap();
     let reparsed = parse::parse(&output).unwrap();
 
@@ -87,7 +87,7 @@ fn pipeline_should_preserve_addresses_and_links_when_extracting_strings() {
     selection.add_spec("0:48".parse().unwrap());
 
     // when
-    let result = extract(&font, &selection, Options::default()).unwrap();
+    let result = extract(&font, &selection, &Options::default()).unwrap();
     let reparsed = parse::parse(&write::write(&result).unwrap()).unwrap();
 
     // then: address preserved, stereo pair intact and mutually linked
@@ -119,8 +119,9 @@ fn pipeline_should_honour_recipe_when_combining_criteria() {
     let result = extract(
         &font,
         &selection,
-        Options {
+        &Options {
             renumber: recipe.renumber,
+            ..Options::default()
         },
     )
     .unwrap();
@@ -155,7 +156,7 @@ fn fluidsynth_should_load_extracted_synthetic_font_when_available() {
     let font = parse::parse(&gm_like_font_bytes()).unwrap();
     let mut selection = Selection::new();
     selection.add_pattern("piano");
-    let result = extract(&font, &selection, Options::default()).unwrap();
+    let result = extract(&font, &selection, &Options::default()).unwrap();
     let path = std::env::temp_dir().join("sf2-cutter-synthetic-smoke.sf2");
     std::fs::write(&path, write::write(&result).unwrap()).unwrap();
 
@@ -189,7 +190,7 @@ fn pipeline_should_fail_cleanly_when_nothing_matches() {
     selection.add_pattern("sitar");
 
     // when
-    let result = extract(&font, &selection, Options::default());
+    let result = extract(&font, &selection, &Options::default());
 
     // then
     assert!(matches!(result, Err(sf2_cutter::Error::EmptySelection)));
