@@ -72,6 +72,10 @@ enum Command {
         /// Report what would be kept without writing anything
         #[arg(long)]
         dry_run: bool,
+        /// Extract despite input validation errors: dangling references are
+        /// dropped and out-of-range sample offsets clamped
+        #[arg(long)]
+        force: bool,
         /// Rename the output bank (sets the INAM chunk)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
@@ -135,6 +139,7 @@ fn run(cli: Cli) -> CliResult {
             keep_drums,
             renumber,
             dry_run,
+            force,
             name,
             moves,
             renames,
@@ -149,6 +154,7 @@ fn run(cli: Cli) -> CliResult {
             keep_drums,
             renumber,
             dry_run,
+            force,
             name,
             moves,
             renames,
@@ -394,6 +400,7 @@ struct ExtractArgs {
     keep_drums: bool,
     renumber: bool,
     dry_run: bool,
+    force: bool,
     name: Option<String>,
     moves: Vec<String>,
     renames: Vec<String>,
@@ -454,6 +461,7 @@ fn build_selection(args: &ExtractArgs) -> Result<(Selection, Options), Box<dyn s
     let mut options = Options {
         renumber: args.renumber,
         rename: args.name.clone(),
+        salvage: args.force,
     };
     for pattern in &args.patterns {
         selection.add_pattern(pattern);
@@ -506,7 +514,11 @@ fn cmd_extract(args: &ExtractArgs) -> CliResult {
     let input_issues = validate(&font);
     print_issues(&input_issues);
     if has_errors(&input_issues) {
-        return Err("input font fails validation; aborting".into());
+        if args.force {
+            emit_err("input font fails validation; salvaging what is reachable (--force)\n");
+        } else {
+            return Err("input font fails validation; aborting (use --force to salvage)".into());
+        }
     }
 
     let (mut selection, options) = build_selection(args)?;
@@ -684,6 +696,7 @@ mod tests {
             keep_drums: false,
             renumber: false,
             dry_run: true,
+            force: false,
             name: None,
             moves: vec![],
             renames: vec![],

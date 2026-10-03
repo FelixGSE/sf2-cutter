@@ -48,6 +48,10 @@ sf2-cutter extract FluidR3_GM.sf2 -m piano --move "8:6=0:20" --rename "0:0=Conce
 `--move` applies all moves simultaneously (so two moves can swap addresses) and refuses
 contested targets; `--rename` changes a preset's name (19 characters max).
 
+For fonts that fail validation, `extract --force` salvages what is reachable: dangling
+instrument/sample references are dropped and out-of-range sample offsets are clamped, and
+the output is still guaranteed to validate cleanly.
+
 Selection criteria:
 
 - `--match PATTERN` — case-insensitive name match; plain text matches as substring,
