@@ -187,13 +187,15 @@ pub fn instrument_zone(instrument: u16) -> Zone {
 /// A global zone carrying the given generators and modulators (no
 /// instrument/sample reference).
 #[must_use]
-pub fn global_zone(gens: Vec<Generator>, mods: Vec<Modulator>) -> Zone {
+pub const fn global_zone(gens: Vec<Generator>, mods: Vec<Modulator>) -> Zone {
     Zone { gens, mods }
 }
 
-/// Builds the small two-preset font used across the test suite:
-/// a mono "Piano" (bank 0, program 0), a stereo "Strings" (bank 0, program
-/// 48) with a global zone and a modulator, and a "Drums" kit on bank 128.
+/// Builds the small font used across the test suite.
+///
+/// It contains a mono "Piano" (bank 0, program 0), a stereo "Strings"
+/// (bank 0, program 48) with a global zone and a modulator, and a "Drums"
+/// kit on bank 128.
 ///
 /// # Panics
 ///

@@ -26,10 +26,25 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test
+      - name: Tests without default features (sf3 off)
+        run: cargo test --no-default-features
+      - name: Documentation lints
+        run: RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage floor
         run: cargo llvm-cov --all-features --fail-under-lines 80
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on MSRV
+        run: cargo check --all-features --all-targets
 
   deny:
     runs-on: ubuntu-latest

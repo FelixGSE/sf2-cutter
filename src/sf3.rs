@@ -7,7 +7,7 @@ use crate::error::Error;
 /// Decodes an Ogg-Vorbis stream to 16-bit PCM. Multi-channel streams yield
 /// their first channel (SF3 stores stereo as two linked mono streams, so
 /// anything else is defensive).
-pub(crate) fn decode_ogg(name: &str, bytes: &[u8]) -> Result<Vec<i16>, Error> {
+pub fn decode_ogg(name: &str, bytes: &[u8]) -> Result<Vec<i16>, Error> {
     let fail = |detail: String| Error::Sf3Decode {
         name: name.to_string(),
         detail,

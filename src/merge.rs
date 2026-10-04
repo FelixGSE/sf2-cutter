@@ -1,16 +1,20 @@
-//! Combine several [`SoundFont`]s into one: presets, instruments, and samples
-//! are concatenated in input order with every cross-reference re-indexed, and
-//! the sample data (including 24-bit extensions) is spliced together.
+//! Combine several [`SoundFont`]s into one.
+//!
+//! Presets, instruments, and samples are concatenated in input order with
+//! every cross-reference re-indexed, and the sample data (including 24-bit
+//! extensions) is spliced together.
 
 use crate::error::Error;
 use crate::model::{
     GEN_INSTRUMENT, GEN_SAMPLE_ID, Instrument, Preset, SampleHeader, SoundFont, Zone,
 };
 
-/// Merges fonts in order. `INFO` comes from the first font (plus provenance
-/// stamping and the optional `rename` of the bank name, exactly like
-/// extraction). Duplicate `bank:program` addresses are kept as-is — resolve
-/// them afterwards with the remapping options of `extract`.
+/// Merges fonts in order.
+///
+/// `INFO` comes from the first font (plus provenance stamping and the
+/// optional `rename` of the bank name, exactly like extraction). Duplicate
+/// `bank:program` addresses are kept as-is — resolve them afterwards with the
+/// remapping options of `extract`.
 ///
 /// When any input carries usable 24-bit data, the output gets an `sm24` chunk
 /// with zero LSBs for the inputs that lack one, and the output version is

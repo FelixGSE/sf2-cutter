@@ -199,7 +199,7 @@ fn find_chunk<'a>(
         .ok_or(Error::MissingChunk(name))
 }
 
-fn ensure_records(data: &[u8], record_size: usize, chunk: &'static str) -> Result<(), Error> {
+const fn ensure_records(data: &[u8], record_size: usize, chunk: &'static str) -> Result<(), Error> {
     if !data.len().is_multiple_of(record_size) {
         return Err(Error::BadRecordSize {
             chunk,
@@ -219,11 +219,11 @@ fn read_name(record: &[u8]) -> FixedName {
     FixedName(name)
 }
 
-fn le16(record: &[u8], offset: usize) -> u16 {
+const fn le16(record: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([record[offset], record[offset + 1]])
 }
 
-fn le32(record: &[u8], offset: usize) -> u32 {
+const fn le32(record: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
         record[offset],
         record[offset + 1],
