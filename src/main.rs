@@ -152,6 +152,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Convert between plain sf2 and compressed sf3 (Ogg Vorbis)
+    Convert {
+        /// Input .sf2 or .sf3 file
+        input: PathBuf,
+        /// Output file; the target format is inferred from its extension
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Target format; required when the output extension is not
+        /// .sf2/.sf3, and must agree with it when it is
+        #[arg(long, value_enum)]
+        to: Option<TargetFormat>,
+        /// Vorbis quality for sf3 output: 0.0 (smallest) ..= 1.0 (best)
+        #[arg(long, default_value_t = 0.4)]
+        quality: f32,
+    },
     /// Generate shell completions on stdout
     Completions {
         /// Target shell
@@ -161,6 +176,15 @@ enum Command {
     /// Print the man page (roff) on stdout
     #[command(hide = true)]
     Man,
+}
+
+/// Conversion target for the `convert` subcommand.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TargetFormat {
+    /// Plain PCM `SoundFont`
+    Sf2,
+    /// Ogg-Vorbis-compressed `SoundFont` (`MuseScore` convention)
+    Sf3,
 }
 
 type CliResult = Result<ExitCode, Box<dyn std::error::Error>>;
@@ -247,6 +271,12 @@ fn run(cli: Cli) -> CliResult {
             force,
             json,
         }),
+        Command::Convert {
+            input,
+            output,
+            to,
+            quality,
+        } => cmd_convert(&input, &output, to, quality),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -993,6 +1023,90 @@ fn cmd_samples(args: &SamplesArgs) -> CliResult {
     Ok(ExitCode::SUCCESS)
 }
 
+const fn target_name(target: TargetFormat) -> &'static str {
+    match target {
+        TargetFormat::Sf2 => "sf2",
+        TargetFormat::Sf3 => "sf3",
+    }
+}
+
+/// Infers the conversion target from the output extension.
+fn infer_target(output: &Path) -> Option<TargetFormat> {
+    match output.extension()?.to_str()? {
+        ext if ext.eq_ignore_ascii_case("sf2") => Some(TargetFormat::Sf2),
+        ext if ext.eq_ignore_ascii_case("sf3") => Some(TargetFormat::Sf3),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sf3-write")]
+fn compress_font(font: &SoundFont, quality: f32) -> Result<SoundFont, Box<dyn std::error::Error>> {
+    Ok(sf2_cutter::convert::compress(font, quality)?)
+}
+
+#[cfg(not(feature = "sf3-write"))]
+fn compress_font(
+    _font: &SoundFont,
+    _quality: f32,
+) -> Result<SoundFont, Box<dyn std::error::Error>> {
+    Err("this build lacks the `sf3-write` feature; rebuild with --features sf3-write".into())
+}
+
+#[cfg(feature = "sf3")]
+fn decompress_font(font: &SoundFont) -> Result<SoundFont, Box<dyn std::error::Error>> {
+    Ok(sf2_cutter::convert::decompress(font)?)
+}
+
+#[cfg(not(feature = "sf3"))]
+fn decompress_font(_font: &SoundFont) -> Result<SoundFont, Box<dyn std::error::Error>> {
+    Err("this build lacks the `sf3` feature; rebuild with default features".into())
+}
+
+/// Converts a font between plain sf2 and compressed sf3.
+fn cmd_convert(input: &Path, output: &Path, to: Option<TargetFormat>, quality: f32) -> CliResult {
+    let inferred = infer_target(output);
+    if let (Some(requested), Some(implied)) = (to, inferred)
+        && requested != implied
+    {
+        return Err(format!(
+            "--to {} contradicts the output extension of {}",
+            target_name(requested),
+            output.display()
+        )
+        .into());
+    }
+    let Some(target) = to.or(inferred) else {
+        return Err("cannot infer the target format; pass --to sf2|sf3".into());
+    };
+    if !(0.0..=1.0).contains(&quality) {
+        return Err(format!("--quality {quality} outside 0.0..=1.0").into());
+    }
+    let (font, input_size) = load_font(input)?;
+    let issues = validate(&font);
+    print_issues(&issues);
+    if has_errors(&issues) {
+        return Err("input font fails validation; aborting".into());
+    }
+
+    let result = match target {
+        TargetFormat::Sf3 => compress_font(&font, quality)?,
+        TargetFormat::Sf2 => decompress_font(&font)?,
+    };
+    let output_issues = validate(&result);
+    if has_errors(&output_issues) {
+        print_issues(&output_issues);
+        return Err("internal error: converted font fails validation; not writing".into());
+    }
+    let predicted_size = write::file_size(&result);
+    write_output(output, &result)?;
+    emit(&format!(
+        "converted {} -> {}\nsize: {input_size} -> {predicted_size} bytes\n",
+        input.display(),
+        output.display()
+    ))?;
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Loads, validates, merges, re-validates, and writes several fonts.
 fn cmd_merge(args: &MergeArgs) -> CliResult {
     let mut fonts = Vec::with_capacity(args.inputs.len());
@@ -1164,6 +1278,21 @@ mod tests {
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano");
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-2");
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-3");
+    }
+
+    #[test]
+    fn infer_target_should_match_extension_when_recognisable() {
+        // given / when / then
+        assert!(matches!(
+            infer_target(Path::new("x/out.sf3")),
+            Some(TargetFormat::Sf3)
+        ));
+        assert!(matches!(
+            infer_target(Path::new("OUT.SF2")),
+            Some(TargetFormat::Sf2)
+        ));
+        assert!(infer_target(Path::new("out.wav")).is_none());
+        assert!(infer_target(Path::new("noext")).is_none());
     }
 
     #[test]

@@ -53,16 +53,7 @@ fn sample_pcm_bytes(font: &SoundFont, sample: &SampleHeader) -> Result<Vec<u8>, 
     if sample.is_compressed() {
         return compressed_pcm_bytes(font, sample);
     }
-    let start = sample.start as usize;
-    let end = sample.end as usize;
-    font.sample_data
-        .get(start * 2..end * 2)
-        .map(<[u8]>::to_vec)
-        .ok_or_else(|| Error::IndexOutOfBounds {
-            what: "sample data range",
-            index: end,
-            max: font.sample_points(),
-        })
+    crate::extract::plain_sample_bytes(font, sample).map(<[u8]>::to_vec)
 }
 
 #[cfg(feature = "sf3")]

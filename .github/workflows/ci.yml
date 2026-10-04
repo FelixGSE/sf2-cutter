@@ -28,12 +28,39 @@ jobs:
         run: cargo test
       - name: Tests without default features (sf3 off)
         run: cargo test --no-default-features
+      - name: Tests with all features (sf3 encoder on)
+        run: cargo test --all-features
       - name: Documentation lints
         run: RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage floor
         run: cargo llvm-cov --all-features --fail-under-lines 80
+
+  # Builds every release target exactly as release.yml does (including the
+  # vendored C Vorbis encoder), so a broken target fails here instead of at
+  # tag time.
+  release-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: houseabsolute/actions-rust-cross@v1.0.8
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--release --locked --features sf3-write"
 
   msrv:
     runs-on: ubuntu-latest
