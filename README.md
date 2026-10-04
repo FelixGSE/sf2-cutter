@@ -62,7 +62,7 @@ instrument/sample references are dropped and out-of-range sample offsets are cla
 the output is still guaranteed to validate cleanly.
 
 SF3 fonts (Ogg-Vorbis-compressed, e.g. MuseScore_General.sf3) can be used as extraction
-*inputs*: kept samples are decoded to PCM and the output is a plain sf2 playable anywhere
+_inputs_: kept samples are decoded to PCM and the output is a plain sf2 playable anywhere
 (enabled by the default `sf3` cargo feature). Full conversion goes both ways:
 
 ```sh
@@ -96,7 +96,7 @@ renumber = false
 
 Extraction notes:
 
-- Only *mutual* stereo links are treated as real pairs and kept together. One-directional
+- Only _mutual_ stereo links are treated as real pairs and kept together. One-directional
   links (FluidR3 types 970 samples left/right but points all their links at sample 0) are
   treated as broken and sanitised to mono headers in the output.
 - Every output is re-validated before it is written; `validate` runs the same checks.

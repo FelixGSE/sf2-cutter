@@ -1,17 +1,17 @@
 [package]
 name = "sf2-cutter"
 version = "0.1.0"
+categories = ["command-line-utilities", "multimedia::audio"]
 edition = "2024"
+# Keep the crates.io tarball to what a consumer needs.
+include = ["src/**", "Cargo.toml", "LICENSE", "README.md"]
+keywords = ["soundfont", "sf2", "midi", "audio", "cli"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/FelixGSE/sf2-cutter"
 # as_chunks and let-chains require 1.88
 rust-version = "1.88"
 description = "Extract a subset of presets from a SoundFont (.sf2) file into a new, smaller .sf2"
-license = "MIT"
-repository = "https://github.com/FelixGSE/sf2-cutter"
-readme = "README.md"
-keywords = ["soundfont", "sf2", "midi", "audio", "cli"]
-categories = ["command-line-utilities", "multimedia::audio"]
-# Keep the crates.io tarball to what a consumer needs.
-include = ["src/**", "Cargo.toml", "LICENSE", "README.md"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

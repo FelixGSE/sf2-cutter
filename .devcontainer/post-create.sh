@@ -23,6 +23,9 @@ else
     echo "==> gh: not authenticated (set GH_TOKEN on the host or run 'gh auth login')"
 fi
 
+# Install the git hooks (.pre-commit-config.yaml) via prek.
+prek install
+
 # Warm the build cache so the first edit/compile is fast.
 cargo fetch
 cargo build

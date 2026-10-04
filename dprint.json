@@ -1,0 +1,5 @@
+{ "excludes": ["target/", "fuzz/target/", "fuzz/corpus/", "mutants.out*/", "Cargo.lock", "CLAUDE.md", "IMPROVEMENTS.md"], "plugins": [
+    "npm:@dprint/toml@0.8.0",
+    "npm:@dprint/markdown@0.26.0",
+    "npm:@dprint/dockerfile@0.6.0"
+  ] }
