@@ -25,7 +25,7 @@ jobs:
             echo "::notice::RELEASE_PLZ_TOKEN is not set; skipping release-plz"
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.present == 'true'
         with:
           fetch-depth: 0
