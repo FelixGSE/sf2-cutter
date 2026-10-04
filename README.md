@@ -103,21 +103,14 @@ Extraction notes:
 - Outputs carry provenance: `sf2-cutter v<version>` is appended to the `ISFT` tool chain,
   and `--name` replaces the bank name (`INAM`).
 
-## Development
+## Installation
 
-Open the folder in VS Code and choose **Reopen in Container** (Rust devcontainer with
-rustfmt, clippy, rust-analyzer, GitHub CLI, Claude Code; runs as unprivileged `dev` user).
+Prebuilt binaries for Linux (x86_64/aarch64), macOS (arm64), and Windows are attached to
+each release, with sha256 checksums. Building from source:
 
 ```sh
-make check     # full gate: fmt-check, clippy -D warnings, tests, coverage floor (80% lines)
-make mutants   # mutation testing (slow; run before merging logic changes)
-make fuzz      # time-boxed fuzzing of the parser and round trip (nightly)
-cargo test -- --ignored   # real-font tests; need FluidR3_GM.sf2 in the repo root
+cargo install --path . --features sf3-write   # sf3-write enables the Vorbis encoder
 ```
-
-The test suite includes property-based tests (random fonts, round-trip and extraction
-invariants) and, when fluidsynth is on PATH, renders an extracted font to WAV and asserts
-the audio is not silence.
 
 Shell completions and a man page are built in:
 
@@ -126,11 +119,17 @@ sf2-cutter completions bash > /etc/bash_completion.d/sf2-cutter   # or zsh/fish/
 sf2-cutter man | man -l -
 ```
 
-Releases are built automatically for Linux (x86_64/aarch64), macOS (arm64), and Windows
-when a `v*` tag is pushed. Dependency licenses and advisories are checked in CI with
-cargo-deny.
+## Development
 
-Test conventions: every test is structured with `// given` / `// when` / `// then`
-comments and named `<subject>_should_<outcome>_when_<condition>`. Architecture: library
-modules `riff`, `model`, `parse`, `write`, `validate`, `select`, `extract`, `merge`,
-`edit`, `builder`, and `sf3` (feature-gated); `src/main.rs` is thin CLI glue.
+```sh
+make check     # full gate: fmt-check, clippy, tests, doc lints, coverage floor
+make mutants   # mutation testing (slow; run before merging logic changes)
+make fuzz      # time-boxed fuzzing of the parser and round trip (nightly)
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development environment, architecture
+notes, and test conventions.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
