@@ -35,6 +35,9 @@ sf2-cutter extract FluidR3_GM.sf2 --config recipes/pianos.toml -o pianos.sf2
 # Machine-readable output for scripting (list, validate, extract)
 sf2-cutter list FluidR3_GM.sf2 --json | jq '.presets[0]'
 
+# Full structural dump (zones, generators by name, modulators, sample headers)
+sf2-cutter dump FluidR3_GM.sf2 | jq '.presets[0].zones'
+
 # Rename the extracted bank
 sf2-cutter extract FluidR3_GM.sf2 -m piano --name "Just Pianos" -o pianos.sf2
 
