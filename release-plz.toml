@@ -6,6 +6,8 @@
 [workspace]
 # Binaries are distributed via GitHub releases; nothing goes to crates.io yet.
 publish = false
+# Determine the previous version from git tags (v*), not the crates.io registry.
+git_only = true
 git_release_enable = true
 git_tag_enable = true
 changelog_update = true
