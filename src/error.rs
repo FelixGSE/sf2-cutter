@@ -53,6 +53,9 @@ pub enum Error {
     /// The selection matched no presets.
     #[error("selection matched no presets")]
     EmptySelection,
+    /// A ROM sample has no audio data in the file to export.
+    #[error("sample `{0}` is in ROM; it has no audio data to export")]
+    RomSample(String),
     /// `merge` was called with an empty input list.
     #[error("merge needs at least one input font")]
     NothingToMerge,

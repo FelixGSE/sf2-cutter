@@ -47,6 +47,9 @@ sf2-cutter merge pianos.sf2 drums.sf2 --name "My Rig" -o rig.sf2
 # One .sf2 per preset (e.g. to load instruments individually)
 sf2-cutter split FluidR3_GM.sf2 -o presets/
 
+# Export sample audio as WAV (all samples, or only a selection's)
+sf2-cutter samples FluidR3_GM.sf2 -m piano -o wav/
+
 # Move and rename presets in the output (works on extract and merge)
 sf2-cutter extract FluidR3_GM.sf2 -m piano --move "8:6=0:20" --rename "0:0=Concert Grand" -o out.sf2
 ```
