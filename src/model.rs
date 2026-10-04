@@ -43,6 +43,20 @@ pub(crate) mod record {
     pub const SHDR: usize = 46;
 }
 
+/// Decodes NUL-terminated text from an SF2 record or `INFO` chunk: the bytes
+/// up to the first NUL, as UTF-8 when valid and otherwise as Latin-1 (the
+/// spec says ASCII, but real-world fonts often store Latin-1 such as `0xA9`
+/// for `©`). Every byte maps to a character, so nothing is ever lost.
+#[must_use]
+pub fn decode_text(data: &[u8]) -> String {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    let text = &data[..end];
+    std::str::from_utf8(text).map_or_else(
+        |_| text.iter().map(|&b| char::from(b)).collect(),
+        str::to_string,
+    )
+}
+
 /// A fixed-size, NUL-padded name exactly as stored in SF2 records.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FixedName(pub [u8; NAME_LEN]);
@@ -58,11 +72,10 @@ impl FixedName {
         Self(bytes)
     }
 
-    /// Renders the name for display: bytes up to the first NUL, lossily decoded.
+    /// Renders the name for display (see [`decode_text`]).
     #[must_use]
     pub fn to_display(&self) -> String {
-        let end = self.0.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
-        String::from_utf8_lossy(&self.0[..end]).into_owned()
+        decode_text(&self.0)
     }
 }
 
@@ -99,6 +112,7 @@ pub struct Generator {
 /// A generator amount decoded according to the spec type of its operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum GeneratorValue {
     /// `rangesType`: an inclusive low/high pair (`keyRange`, `velRange`).
     Range {
@@ -271,8 +285,12 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
 }
 
-/// A sample header (`shdr` record). Offsets are in sample points (16-bit
-/// words) into the `smpl` chunk, not bytes.
+/// A sample header (`shdr` record).
+///
+/// For plain samples the offsets are in sample points (16-bit words) into the
+/// `smpl` chunk. For SF3-compressed samples ([`Self::is_compressed`]) `start`
+/// and `end` are BYTE offsets of the Ogg-Vorbis stream and the loop points
+/// are relative to the decoded audio.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SampleHeader {
     /// Sample name.
@@ -338,6 +356,33 @@ pub struct InfoChunk {
     pub id: [u8; 4],
     /// Raw chunk payload.
     pub data: Vec<u8>,
+}
+
+impl InfoChunk {
+    /// The payload as text, when it is text: decoded per [`decode_text`] and
+    /// free of control characters other than line breaks and tabs. Binary
+    /// payloads such as the 4-byte `ifil` version yield `None`.
+    #[must_use]
+    pub fn text(&self) -> Option<String> {
+        let text = decode_text(&self.data);
+        let printable = !text.trim().is_empty()
+            && text
+                .chars()
+                .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'));
+        printable.then_some(text)
+    }
+}
+
+/// Serialised as `{id, text, bytes}`.
+impl serde::Serialize for InfoChunk {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut row = serializer.serialize_struct("InfoChunk", 3)?;
+        row.serialize_field("id", &String::from_utf8_lossy(&self.id))?;
+        row.serialize_field("text", &self.text())?;
+        row.serialize_field("bytes", &self.data.len())?;
+        row.end()
+    }
 }
 
 /// A complete in-memory `SoundFont`.
@@ -424,9 +469,26 @@ impl SoundFont {
     /// Bank name from the `INAM` chunk, if present.
     #[must_use]
     pub fn name(&self) -> Option<String> {
-        let data = self.info_chunk(*b"INAM")?;
-        let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        Some(String::from_utf8_lossy(&data[..end]).into_owned())
+        self.info_chunk(*b"INAM").map(decode_text)
+    }
+}
+
+/// The structural dump format (`sf2-cutter dump`): name, version, `INFO`
+/// chunks, presets, instruments, and sample headers. Sample audio is
+/// summarised as byte counts rather than serialised.
+impl serde::Serialize for SoundFont {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut font = serializer.serialize_struct("SoundFont", 8)?;
+        font.serialize_field("name", &self.name())?;
+        font.serialize_field("version", &self.version())?;
+        font.serialize_field("info", &self.info)?;
+        font.serialize_field("sample_data_bytes", &self.sample_data.len())?;
+        font.serialize_field("sm24_bytes", &self.sample_data_24.as_ref().map(Vec::len))?;
+        font.serialize_field("presets", &self.presets)?;
+        font.serialize_field("instruments", &self.instruments)?;
+        font.serialize_field("samples", &self.samples)?;
+        font.end()
     }
 }
 
@@ -550,6 +612,154 @@ mod tests {
         assert!(sample_header_with_type(4).is_linked());
         assert!(sample_header_with_type(8).is_linked());
         assert!(!sample_header_with_type(1).is_linked());
+    }
+
+    #[test]
+    fn generator_name_should_match_spec_table_when_checking_every_operator() {
+        // given: SF2.04 section 8.1.2, operators 0..=58; None = unused/reserved
+        let spec: [Option<&str>; 61] = [
+            Some("startAddrsOffset"),
+            Some("endAddrsOffset"),
+            Some("startloopAddrsOffset"),
+            Some("endloopAddrsOffset"),
+            Some("startAddrsCoarseOffset"),
+            Some("modLfoToPitch"),
+            Some("vibLfoToPitch"),
+            Some("modEnvToPitch"),
+            Some("initialFilterFc"),
+            Some("initialFilterQ"),
+            Some("modLfoToFilterFc"),
+            Some("modEnvToFilterFc"),
+            Some("endAddrsCoarseOffset"),
+            Some("modLfoToVolume"),
+            None, // unused1
+            Some("chorusEffectsSend"),
+            Some("reverbEffectsSend"),
+            Some("pan"),
+            None, // unused2
+            None, // unused3
+            None, // unused4
+            Some("delayModLFO"),
+            Some("freqModLFO"),
+            Some("delayVibLFO"),
+            Some("freqVibLFO"),
+            Some("delayModEnv"),
+            Some("attackModEnv"),
+            Some("holdModEnv"),
+            Some("decayModEnv"),
+            Some("sustainModEnv"),
+            Some("releaseModEnv"),
+            Some("keynumToModEnvHold"),
+            Some("keynumToModEnvDecay"),
+            Some("delayVolEnv"),
+            Some("attackVolEnv"),
+            Some("holdVolEnv"),
+            Some("decayVolEnv"),
+            Some("sustainVolEnv"),
+            Some("releaseVolEnv"),
+            Some("keynumToVolEnvHold"),
+            Some("keynumToVolEnvDecay"),
+            Some("instrument"),
+            None, // reserved1
+            Some("keyRange"),
+            Some("velRange"),
+            Some("startloopAddrsCoarseOffset"),
+            Some("keynum"),
+            Some("velocity"),
+            Some("initialAttenuation"),
+            None, // reserved2
+            Some("endloopAddrsCoarseOffset"),
+            Some("coarseTune"),
+            Some("fineTune"),
+            Some("sampleID"),
+            Some("sampleModes"),
+            None, // reserved3
+            Some("scaleTuning"),
+            Some("exclusiveClass"),
+            Some("overridingRootKey"),
+            None, // unused5
+            None, // endOper
+        ];
+
+        // when / then
+        for (oper, expected) in (0u16..).zip(spec) {
+            assert_eq!(generator_name(oper), expected, "operator {oper}");
+        }
+        assert_eq!(generator_name(u16::MAX), None);
+    }
+
+    #[test]
+    fn decode_text_should_fall_back_to_latin1_when_bytes_are_not_utf8() {
+        // given / when / then
+        assert_eq!(decode_text(b"Caf\xe9 \xa9 2008\0junk"), "Café © 2008");
+        assert_eq!(decode_text("Flöte".as_bytes()), "Flöte");
+        assert_eq!(decode_text(b"plain"), "plain");
+    }
+
+    #[test]
+    fn info_text_should_return_text_when_payload_is_printable() {
+        // given
+        let chunk = |data: &[u8]| InfoChunk {
+            id: *b"ICMT",
+            data: data.to_vec(),
+        };
+
+        // when / then
+        assert_eq!(chunk(b"hello\0").text().as_deref(), Some("hello"));
+        assert_eq!(
+            chunk(b"line1\nline2\t!\0").text().as_deref(),
+            Some("line1\nline2\t!")
+        );
+        assert_eq!(
+            chunk(b"\xa9 Someone\0").text().as_deref(),
+            Some("© Someone")
+        );
+        assert_eq!(chunk(b"first\0second").text().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn info_text_should_return_none_when_payload_is_binary_or_blank() {
+        // given
+        let chunk = |data: &[u8]| InfoChunk {
+            id: *b"ifil",
+            data: data.to_vec(),
+        };
+
+        // when / then
+        assert_eq!(chunk(&[2, 0, 4, 0]).text(), None);
+        assert_eq!(chunk(b"").text(), None);
+        assert_eq!(chunk(b"   \0").text(), None);
+        assert_eq!(chunk(b"bell\x07\0").text(), None);
+    }
+
+    #[test]
+    fn soundfont_should_serialize_dump_structure_when_font_is_synthetic() {
+        // given
+        let font = crate::builder::test_font();
+
+        // when
+        let value = serde_json::to_value(&font).unwrap();
+
+        // then
+        assert_eq!(value["name"], "Fixture Font");
+        assert_eq!(value["version"], serde_json::json!([2, 4]));
+        assert_eq!(value["info"][0]["id"], "ifil");
+        assert_eq!(value["info"][0]["text"], serde_json::Value::Null);
+        assert_eq!(value["info"][0]["bytes"], 4);
+        assert_eq!(value["info"][2]["text"], "Fixture Font");
+        assert_eq!(value["sample_data_bytes"], font.sample_data.len());
+        assert_eq!(value["sm24_bytes"], serde_json::Value::Null);
+        assert_eq!(value["presets"][1]["program"], 48);
+        assert_eq!(
+            value["presets"][0]["zones"][0]["gens"][0]["name"],
+            "instrument"
+        );
+        assert_eq!(
+            value["instruments"][0]["zones"][0]["gens"][0]["name"],
+            "sampleID"
+        );
+        assert_eq!(value["samples"][0]["name"], "piano-c4");
+        assert_eq!(value["samples"].as_array().unwrap().len(), 4);
     }
 
     #[test]
