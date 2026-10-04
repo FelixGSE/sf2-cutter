@@ -16,12 +16,10 @@ lint:
 test:
 	cargo test
 
-# CARGO_INCREMENTAL=0: incremental codegen hard-links object files, which
-# fails with EACCES on virtiofs mounts (macOS/Lima docker); coverage gains
-# nothing from incremental builds anyway.
 doc:
 	RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
 
+# Coverage gains nothing from incremental builds; keep them off there.
 coverage:
 	CARGO_INCREMENTAL=0 cargo llvm-cov --all-features --fail-under-lines 80
 
