@@ -106,6 +106,36 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
 
+  # Real-font integration tests (byte-identical FluidR3 round trip, piano
+  # extraction, fluidsynth load). The 141 MB soundfont comes from the Debian
+  # mirror once and then lives in the Actions cache — deliberately not Git LFS,
+  # whose free bandwidth quota a few CI runs would exhaust. Heavier than the
+  # unit gate, so it runs on main and on demand rather than on every PR.
+  real-font:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache FluidR3_GM.sf2
+        id: fluid-cache
+        uses: actions/cache@v4
+        with:
+          path: FluidR3_GM.sf2
+          key: fluid-soundfont-gm-3.1-6
+      - name: Fetch soundfont from the Debian mirror
+        if: steps.fluid-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o fluid.deb https://deb.debian.org/debian/pool/main/f/fluid-soundfont/fluid-soundfont-gm_3.1-6_all.deb
+          dpkg-deb -x fluid.deb fluid-extract
+          mv fluid-extract/usr/share/sounds/sf2/FluidR3_GM.sf2 .
+          rm -r fluid.deb fluid-extract
+      - name: Install fluidsynth
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fluidsynth
+      - name: Real-font tests
+        run: cargo test --release -- --ignored
+
   # Mutation testing is too slow for the PR gate; run on demand.
   mutants:
     if: github.event_name == 'workflow_dispatch'
