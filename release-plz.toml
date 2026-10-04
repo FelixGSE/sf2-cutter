@@ -8,6 +8,9 @@
 publish = false
 # Determine the previous version from git tags (v*), not the crates.io registry.
 git_only = true
+# Release only when a release PR is merged. Without this, the untagged 0.1.0
+# would be tagged and published automatically on the next push to main.
+release_always = false
 git_release_enable = true
 git_tag_enable = true
 changelog_update = true

@@ -13,13 +13,28 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: release-plz
     steps:
+      # Skip cleanly (instead of failing every push) until the secret exists.
+      - name: Check for RELEASE_PLZ_TOKEN
+        id: token
+        env:
+          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::RELEASE_PLZ_TOKEN is not set; skipping release-plz"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
         with:
           fetch-depth: 0
           # Must be a PAT (repo secret RELEASE_PLZ_TOKEN): tags created with
           # the default GITHUB_TOKEN do not trigger the release workflow.
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.token.outputs.present == 'true'
       - uses: release-plz/action@v0.5.139
+        if: steps.token.outputs.present == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
