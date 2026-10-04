@@ -1,0 +1,7 @@
+ignored:
+  # Unpinned apt packages are deliberate in the devcontainer: it tracks the
+  # distro's current toolchain; reproducibility comes from the lockfiles.
+  - DL3008
+  # Consecutive RUNs are deliberate layer boundaries (toolchain components /
+  # slow cargo installs / small binary downloads cache independently).
+  - DL3059

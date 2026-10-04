@@ -51,21 +51,21 @@ test or justified in the PR. Known equivalent (unkillable) survivors:
 `src/lib.rs` exposes the library; `src/main.rs` is thin CLI glue (excluded from mutation
 testing). Modules:
 
-| Module | Responsibility |
-|---|---|
-| `riff` | generic RIFF chunk reader/writer |
-| `model` | SF2 data model, spec constants, generator names |
-| `parse` | bytes → model, structural validation |
-| `write` | model → bytes, canonical form |
-| `validate` | integrity checks returning issue lists |
-| `select` | which presets to keep (patterns, addresses, recipes) |
-| `extract` | reachability walk, re-indexing, sample slicing, salvage |
-| `merge` | combine fonts with offset re-indexing |
-| `edit` | move/rename presets |
-| `convert` | sf2 ⇄ sf3 (`sf3-write` feature for compression) |
-| `export` | sample WAV export |
-| `builder` | programmatic font construction (also the test fixture factory) |
-| `sf3` | Ogg-Vorbis decode/encode wrappers (feature-gated) |
+| Module     | Responsibility                                                 |
+| ---------- | -------------------------------------------------------------- |
+| `riff`     | generic RIFF chunk reader/writer                               |
+| `model`    | SF2 data model, spec constants, generator names                |
+| `parse`    | bytes → model, structural validation                           |
+| `write`    | model → bytes, canonical form                                  |
+| `validate` | integrity checks returning issue lists                         |
+| `select`   | which presets to keep (patterns, addresses, recipes)           |
+| `extract`  | reachability walk, re-indexing, sample slicing, salvage        |
+| `merge`    | combine fonts with offset re-indexing                          |
+| `edit`     | move/rename presets                                            |
+| `convert`  | sf2 ⇄ sf3 (`sf3-write` feature for compression)                |
+| `export`   | sample WAV export                                              |
+| `builder`  | programmatic font construction (also the test fixture factory) |
+| `sf3`      | Ogg-Vorbis decode/encode wrappers (feature-gated)              |
 
 Key invariants: `write(parse(x))` round-trips (byte-identical for canonical files) and
 every produced font passes `validate` before touching disk. SF3-compressed samples use

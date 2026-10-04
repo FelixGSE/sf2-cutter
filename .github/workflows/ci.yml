@@ -75,6 +75,17 @@ jobs:
       - name: Check on MSRV
         run: cargo check --all-features --all-targets
 
+  lint-aux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint (devcontainer image)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: .devcontainer/Dockerfile
+      - name: dprint check
+        uses: dprint/check@v2.2
+
   deny:
     runs-on: ubuntu-latest
     steps:

@@ -1,6 +1,9 @@
 # Rust development container, runs as a non-root user.
 FROM rust:1-bookworm
 
+# Piped RUNs (curl | sh) must fail loudly.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
@@ -28,7 +31,18 @@ RUN rustup component add rustfmt clippy rust-analyzer rust-src llvm-tools
 # /usr/local/cargo/bin, which is an image layer (only the registry is
 # volume-backed), so installing here survives container rebuilds.
 # Compiling the two tools adds ~10 minutes to a cold image build.
-RUN cargo install --locked cargo-llvm-cov cargo-mutants cargo-fuzz
+RUN cargo install --locked cargo-llvm-cov cargo-mutants cargo-fuzz prek
+
+# Hook/format/lint tooling: dprint (TOML/Markdown/Dockerfile formatter) and
+# hadolint (Dockerfile linter), both as static binaries.
+RUN curl -fsSL https://dprint.dev/install.sh | DPRINT_INSTALL=/usr/local sh \
+    && case "$(dpkg --print-architecture)" in \
+        arm64) HL_ARCH=arm64 ;; \
+        *) HL_ARCH=x86_64 ;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/hadolint \
+        "https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-${HL_ARCH}" \
+    && chmod +x /usr/local/bin/hadolint
 
 # Create the unprivileged user (no sudo). Pre-create the cargo registry dir so a
 # named volume mounted there inherits dev ownership instead of root.
