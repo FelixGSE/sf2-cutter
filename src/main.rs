@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory as _, Parser, Subcommand};
 
 use sf2_cutter::extract::{self, Options};
-use sf2_cutter::model::{Preset, SoundFont};
+use sf2_cutter::model::{Instrument, Preset, SampleHeader, SoundFont};
 use sf2_cutter::select::{PresetSpec, Recipe, Selection};
 use sf2_cutter::validate::{Issue, Severity, has_errors, validate};
 use sf2_cutter::{merge, parse, write};
@@ -126,6 +126,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Dump the complete font structure as JSON on stdout
+    Dump {
+        /// Input .sf2 file
+        input: PathBuf,
+    },
     /// Generate shell completions on stdout
     Completions {
         /// Target shell
@@ -205,6 +210,7 @@ fn run(cli: Cli) -> CliResult {
             force,
             json,
         } => cmd_split(&input, &output, force, json),
+        Command::Dump { input } => cmd_dump(&input),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -340,6 +346,66 @@ fn validate_json(issues: &[Issue]) -> ValidateJson {
 
 fn emit_json<T: serde::Serialize>(value: &T) -> Result<(), Box<dyn std::error::Error>> {
     emit(&format!("{}\n", serde_json::to_string_pretty(value)?))
+}
+
+#[derive(serde::Serialize)]
+struct InfoJson {
+    id: String,
+    text: Option<String>,
+    bytes: usize,
+}
+
+#[derive(serde::Serialize)]
+struct DumpJson<'a> {
+    name: Option<String>,
+    version: Option<(u16, u16)>,
+    info: Vec<InfoJson>,
+    sample_data_bytes: usize,
+    sm24_bytes: Option<usize>,
+    presets: &'a [Preset],
+    instruments: &'a [Instrument],
+    samples: &'a [SampleHeader],
+}
+
+/// Text of an INFO payload when it is a printable NUL-terminated string.
+fn info_text(data: &[u8]) -> Option<String> {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    let text = std::str::from_utf8(&data[..end]).ok()?;
+    let printable = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t');
+    printable.then(|| text.to_string())
+}
+
+/// Serialisable view of the whole model (sample audio summarised as sizes).
+fn dump_json(font: &SoundFont) -> DumpJson<'_> {
+    DumpJson {
+        name: font.name(),
+        version: font.version(),
+        info: font
+            .info
+            .iter()
+            .map(|chunk| InfoJson {
+                id: String::from_utf8_lossy(&chunk.id).into_owned(),
+                text: info_text(&chunk.data),
+                bytes: chunk.data.len(),
+            })
+            .collect(),
+        sample_data_bytes: font.sample_data.len(),
+        sm24_bytes: font.sample_data_24.as_ref().map(Vec::len),
+        presets: &font.presets,
+        instruments: &font.instruments,
+        samples: &font.samples,
+    }
+}
+
+/// Dumps the full structure of a parseable font; deliberately no validation
+/// gate, so broken fonts can be inspected too.
+fn cmd_dump(input: &Path) -> CliResult {
+    let (font, _) = load_font(input)?;
+    emit_json(&dump_json(&font))?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_list(input: &Path, json: bool) -> CliResult {
@@ -973,6 +1039,52 @@ mod tests {
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano");
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-2");
         assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-3");
+    }
+
+    #[test]
+    fn dump_json_should_expose_full_structure_when_font_is_synthetic() {
+        // given
+        let mut builder = sf2_cutter::builder::SoundFontBuilder::new("Dump Me");
+        let sample = builder.add_sample("tone", &[1; 100], 44_100, 60).unwrap();
+        let instrument = builder
+            .add_instrument("Inst", vec![sf2_cutter::builder::sample_zone(sample)])
+            .unwrap();
+        builder.add_preset(
+            "Preset",
+            0,
+            3,
+            vec![sf2_cutter::builder::instrument_zone(instrument)],
+        );
+        let font = builder.build();
+
+        // when
+        let value = serde_json::to_value(dump_json(&font)).unwrap();
+
+        // then
+        assert_eq!(value["name"], "Dump Me");
+        assert_eq!(value["version"][0], 2);
+        assert_eq!(value["info"][0]["id"], "ifil");
+        assert_eq!(value["info"][0]["text"], serde_json::Value::Null);
+        assert_eq!(value["info"][2]["text"], "Dump Me");
+        assert_eq!(value["presets"][0]["program"], 3);
+        assert_eq!(
+            value["presets"][0]["zones"][0]["gens"][0]["name"],
+            "instrument"
+        );
+        assert_eq!(
+            value["instruments"][0]["zones"][0]["gens"][0]["name"],
+            "sampleID"
+        );
+        assert_eq!(value["samples"][0]["name"], "tone");
+        assert_eq!(value["sample_data_bytes"], (100 + 46) * 2);
+    }
+
+    #[test]
+    fn info_text_should_reject_payload_when_not_printable() {
+        // given / when / then
+        assert_eq!(info_text(b"hello\0"), Some("hello".to_string()));
+        assert_eq!(info_text(&[2, 0, 4, 0]), None);
+        assert_eq!(info_text(b""), None);
     }
 
     #[test]

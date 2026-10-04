@@ -62,6 +62,12 @@ impl FixedName {
     }
 }
 
+impl serde::Serialize for FixedName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_display())
+    }
+}
+
 impl fmt::Display for FixedName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_display())
@@ -86,8 +92,79 @@ pub struct Generator {
     pub amount: u16,
 }
 
+impl serde::Serialize for Generator {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut row = serializer.serialize_struct("Generator", 3)?;
+        row.serialize_field("oper", &self.oper)?;
+        row.serialize_field("name", &generator_name(self.oper))?;
+        row.serialize_field("amount", &self.amount)?;
+        row.end()
+    }
+}
+
+/// The spec name of a generator operator, when it is a defined one.
+#[must_use]
+pub const fn generator_name(oper: u16) -> Option<&'static str> {
+    Some(match oper {
+        0 => "startAddrsOffset",
+        1 => "endAddrsOffset",
+        2 => "startloopAddrsOffset",
+        3 => "endloopAddrsOffset",
+        4 => "startAddrsCoarseOffset",
+        5 => "modLfoToPitch",
+        6 => "vibLfoToPitch",
+        7 => "modEnvToPitch",
+        8 => "initialFilterFc",
+        9 => "initialFilterQ",
+        10 => "modLfoToFilterFc",
+        11 => "modEnvToFilterFc",
+        12 => "endAddrsCoarseOffset",
+        13 => "modLfoToVolume",
+        15 => "chorusEffectsSend",
+        16 => "reverbEffectsSend",
+        17 => "pan",
+        21 => "delayModLFO",
+        22 => "freqModLFO",
+        23 => "delayVibLFO",
+        24 => "freqVibLFO",
+        25 => "delayModEnv",
+        26 => "attackModEnv",
+        27 => "holdModEnv",
+        28 => "decayModEnv",
+        29 => "sustainModEnv",
+        30 => "releaseModEnv",
+        31 => "keynumToModEnvHold",
+        32 => "keynumToModEnvDecay",
+        33 => "delayVolEnv",
+        34 => "attackVolEnv",
+        35 => "holdVolEnv",
+        36 => "decayVolEnv",
+        37 => "sustainVolEnv",
+        38 => "releaseVolEnv",
+        39 => "keynumToVolEnvHold",
+        40 => "keynumToVolEnvDecay",
+        41 => "instrument",
+        43 => "keyRange",
+        44 => "velRange",
+        45 => "startloopAddrsCoarseOffset",
+        46 => "keynum",
+        47 => "velocity",
+        48 => "initialAttenuation",
+        50 => "endloopAddrsCoarseOffset",
+        51 => "coarseTune",
+        52 => "fineTune",
+        53 => "sampleID",
+        54 => "sampleModes",
+        56 => "scaleTuning",
+        57 => "exclusiveClass",
+        58 => "overridingRootKey",
+        _ => return None,
+    })
+}
+
 /// A modulator record (`sfModList`/`sfInstModList`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Modulator {
     /// Source modulator controller (`sfModSrcOper`).
     pub src_oper: u16,
@@ -102,7 +179,7 @@ pub struct Modulator {
 }
 
 /// A preset or instrument zone: a modulator list and a generator list.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct Zone {
     /// Generators, in on-disk order.
     pub gens: Vec<Generator>,
@@ -132,7 +209,7 @@ fn last_amount(gens: &[Generator], oper: u16) -> Option<u16> {
 }
 
 /// A preset (`phdr` record plus its resolved zones).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Preset {
     /// Preset name.
     pub name: FixedName,
@@ -151,7 +228,7 @@ pub struct Preset {
 }
 
 /// An instrument (`inst` record plus its resolved zones).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Instrument {
     /// Instrument name.
     pub name: FixedName,
@@ -161,7 +238,7 @@ pub struct Instrument {
 
 /// A sample header (`shdr` record). Offsets are in sample points (16-bit
 /// words) into the `smpl` chunk, not bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SampleHeader {
     /// Sample name.
     pub name: FixedName,
@@ -438,6 +515,39 @@ mod tests {
         assert!(sample_header_with_type(4).is_linked());
         assert!(sample_header_with_type(8).is_linked());
         assert!(!sample_header_with_type(1).is_linked());
+    }
+
+    #[test]
+    fn generator_name_should_resolve_spec_operators_when_defined() {
+        // given / when / then
+        assert_eq!(generator_name(GEN_INSTRUMENT), Some("instrument"));
+        assert_eq!(generator_name(GEN_SAMPLE_ID), Some("sampleID"));
+        assert_eq!(generator_name(17), Some("pan"));
+        assert_eq!(generator_name(43), Some("keyRange"));
+        assert_eq!(generator_name(14), None);
+        assert_eq!(generator_name(999), None);
+    }
+
+    #[test]
+    fn generator_should_serialize_with_name_when_oper_is_known() {
+        // given
+        let known = Generator {
+            oper: GEN_INSTRUMENT,
+            amount: 7,
+        };
+        let unknown = Generator {
+            oper: 999,
+            amount: 1,
+        };
+
+        // when
+        let known_json = serde_json::to_value(known).unwrap();
+        let unknown_json = serde_json::to_value(unknown).unwrap();
+
+        // then
+        assert_eq!(known_json["name"], "instrument");
+        assert_eq!(known_json["amount"], 7);
+        assert_eq!(unknown_json["name"], serde_json::Value::Null);
     }
 
     #[test]
