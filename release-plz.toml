@@ -1,0 +1,13 @@
+# Release automation (https://release-plz.dev): on every push to main,
+# release-plz maintains a release PR with the next semver version (derived
+# from conventional commits) and the changelog; merging that PR creates the
+# tag, which triggers the binary release workflow.
+
+[workspace]
+# Binaries are distributed via GitHub releases; nothing goes to crates.io yet.
+publish = false
+git_release_enable = true
+git_tag_enable = true
+changelog_update = true
+# Fail the release PR when the public API breaks without a major bump.
+semver_check = true

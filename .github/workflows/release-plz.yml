@@ -1,0 +1,25 @@
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-plz:
+    runs-on: ubuntu-latest
+    concurrency: release-plz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Must be a PAT (repo secret RELEASE_PLZ_TOKEN): tags created with
+          # the default GITHUB_TOKEN do not trigger the release workflow.
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5.139
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
