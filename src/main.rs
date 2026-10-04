@@ -131,6 +131,27 @@ enum Command {
         /// Input .sf2 file
         input: PathBuf,
     },
+    /// Export sample audio as 16-bit mono WAV files
+    Samples {
+        /// Input .sf2 file
+        input: PathBuf,
+        /// Output directory (created if missing)
+        #[arg(short, long, value_name = "DIR")]
+        output: PathBuf,
+        /// Only samples reachable from presets matching this pattern (repeatable)
+        #[arg(short = 'm', long = "match", value_name = "PATTERN")]
+        patterns: Vec<String>,
+        /// Only samples reachable from this preset address (repeatable)
+        #[arg(short = 'p', long = "preset", value_name = "BANK:PROG")]
+        presets: Vec<String>,
+        /// Export despite validation errors, skipping (and reporting) samples
+        /// that cannot be exported instead of aborting
+        #[arg(long)]
+        force: bool,
+        /// Emit a machine-readable JSON report on stdout
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions on stdout
     Completions {
         /// Target shell
@@ -211,6 +232,21 @@ fn run(cli: Cli) -> CliResult {
             json,
         } => cmd_split(&input, &output, force, json),
         Command::Dump { input } => cmd_dump(&input),
+        Command::Samples {
+            input,
+            output,
+            patterns,
+            presets,
+            force,
+            json,
+        } => cmd_samples(&SamplesArgs {
+            input,
+            output,
+            patterns,
+            presets,
+            force,
+            json,
+        }),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -638,14 +674,20 @@ fn cmd_extract(args: &ExtractArgs) -> CliResult {
 /// safe: the input was fully read before this point).
 fn write_output(output: &Path, font: &SoundFont) -> Result<u64, Box<dyn std::error::Error>> {
     let bytes = write::write(font)?;
-    let size = bytes.len() as u64;
-    let mut tmp_name = output.as_os_str().to_owned();
+    write_bytes(output, &bytes)?;
+    Ok(bytes.len() as u64)
+}
+
+/// Writes bytes via a sibling temp file and rename (same guarantees as
+/// `write_output`, for non-font payloads).
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
     std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, output)
-        .map_err(|e| format!("cannot move {} to {}: {e}", tmp.display(), output.display()))?;
-    Ok(size)
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("cannot move {} to {}: {e}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 /// Builds the shared JSON report for extract and merge results.
@@ -691,8 +733,8 @@ fn extract_json_report(
 /// full Unicode so that names differing only in case produce the SAME stem
 /// (and thus get collision suffixes) instead of silently overwriting each
 /// other on case-insensitive filesystems. Empty results fall back to
-/// "preset".
-fn slug(name: &str) -> String {
+/// `fallback`.
+fn slug(name: &str, fallback: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
     for character in name.chars() {
@@ -706,7 +748,7 @@ fn slug(name: &str) -> String {
             gap = true;
         }
     }
-    if out.is_empty() { "preset".into() } else { out }
+    if out.is_empty() { fallback.into() } else { out }
 }
 
 /// Reserves `stem` in `used`, appending `-2`, `-3`, ... on collisions.
@@ -749,15 +791,7 @@ fn cmd_split(input: &Path, output: &Path, force: bool, json: bool) -> CliResult 
         }
     }
 
-    std::fs::create_dir_all(output)
-        .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
-    let occupied = std::fs::read_dir(output).is_ok_and(|mut dir| dir.next().is_some());
-    if occupied {
-        emit_err(&format!(
-            "warning: {} is not empty; same-named files are overwritten, others left in place\n",
-            output.display()
-        ));
-    }
+    prepare_output_dir(output)?;
 
     let options = Options {
         salvage: force,
@@ -783,7 +817,7 @@ fn cmd_split(input: &Path, output: &Path, force: bool, json: bool) -> CliResult 
                 "{:03}-{:03}-{}",
                 preset.bank,
                 preset.program,
-                slug(&preset.name.to_display())
+                slug(&preset.name.to_display(), "preset")
             ),
         );
         let path = output.join(format!("{stem}.sf2"));
@@ -811,6 +845,148 @@ fn cmd_split(input: &Path, output: &Path, force: bool, json: bool) -> CliResult 
             "split {} presets into {}",
             entries.len(),
             output.display()
+        );
+        emit(&buf)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Creates the output directory and warns when it already holds files, since
+/// same-named outputs are overwritten and unrelated ones are left in place.
+fn prepare_output_dir(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let occupied = std::fs::read_dir(output).is_ok_and(|mut dir| dir.next().is_some());
+    std::fs::create_dir_all(output)
+        .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
+    if occupied {
+        emit_err(&format!(
+            "warning: {} is not empty; same-named files are overwritten, others left in place\n",
+            output.display()
+        ));
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SampleEntry {
+    index: usize,
+    name: String,
+    file: String,
+    frames: usize,
+    sample_rate: u32,
+}
+
+#[derive(serde::Serialize)]
+struct SkippedSample {
+    index: usize,
+    name: String,
+    reason: String,
+}
+
+struct SamplesArgs {
+    input: PathBuf,
+    output: PathBuf,
+    patterns: Vec<String>,
+    presets: Vec<String>,
+    force: bool,
+    json: bool,
+}
+
+/// Exports sample audio as WAV files: every sample, or only those reachable
+/// from a preset selection. Indices (filename prefix and report) always refer
+/// to the input font, so they match `dump`/`validate`.
+fn cmd_samples(args: &SamplesArgs) -> CliResult {
+    let (font, _) = load_font(&args.input)?;
+    let issues = validate(&font);
+    print_issues(&issues);
+    if has_errors(&issues) {
+        if args.force {
+            emit_err("input font fails validation; exporting what is possible (--force)\n");
+        } else {
+            return Err(
+                "input font fails validation; aborting (use --force to skip bad samples)".into(),
+            );
+        }
+    }
+
+    let mut selection = Selection::new();
+    for pattern in &args.patterns {
+        selection.add_pattern(pattern);
+    }
+    for spec in &args.presets {
+        selection.add_spec(spec.parse()?);
+    }
+    let options = Options {
+        salvage: args.force,
+        ..Options::default()
+    };
+    let indices: Vec<usize> = if selection.is_empty() {
+        (0..font.samples.len()).collect()
+    } else {
+        extract::reachable_sample_indices(&font, &selection, &options)?
+    };
+    if font.sm24_usable() {
+        emit_err("note: the font carries 24-bit (sm24) detail; WAVs are exported as 16-bit\n");
+    }
+
+    prepare_output_dir(&args.output)?;
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+    let mut skipped_rom = 0usize;
+    for index in indices {
+        let Some(sample) = font.samples.get(index) else {
+            continue; // unreachable: indices come from this font
+        };
+        if sample.is_rom() {
+            skipped_rom += 1;
+            continue;
+        }
+        let progress = format!("after writing {} WAV files", entries.len());
+        let wav = match sf2_cutter::export::sample_wav(&font, index) {
+            Ok(wav) => wav,
+            Err(error) if args.force => {
+                emit_err(&format!("warning: skipping sample {index}: {error}\n"));
+                skipped.push(SkippedSample {
+                    index,
+                    name: sample.name.to_display(),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("{progress}: {error} (use --force to skip it)").into());
+            }
+        };
+        // The zero-padded index is unique per sample, so no collision handling.
+        let stem = format!("{index:04}-{}", slug(&sample.name.to_display(), "sample"));
+        let path = args.output.join(format!("{stem}.wav"));
+        write_bytes(&path, &wav.bytes).map_err(|e| format!("{progress}: {e}"))?;
+        entries.push(SampleEntry {
+            index,
+            name: sample.name.to_display(),
+            file: path.display().to_string(),
+            frames: wav.frames,
+            sample_rate: sample.sample_rate,
+        });
+    }
+
+    if args.json {
+        emit_json(&serde_json::json!({
+            "count": entries.len(),
+            "skipped_rom": skipped_rom,
+            "skipped": skipped,
+            "written": entries,
+        }))?;
+    } else {
+        let mut buf = String::new();
+        for entry in &entries {
+            let _ = writeln!(buf, "wrote {}", entry.file);
+        }
+        let _ = writeln!(
+            buf,
+            "exported {} samples to {} ({skipped_rom} ROM samples skipped, {} failed and skipped)",
+            entries.len(),
+            args.output.display(),
+            skipped.len()
         );
         emit(&buf)?;
     }
@@ -962,20 +1138,21 @@ mod tests {
     #[test]
     fn slug_should_collapse_special_characters_when_name_is_messy() {
         // given / when / then
-        assert_eq!(slug("Yamaha Grand Piano"), "yamaha-grand-piano");
-        assert_eq!(slug("E.Piano (bright)!"), "e-piano-bright");
-        assert_eq!(slug("snare_2-alt"), "snare_2-alt");
-        assert_eq!(slug("Flöte"), "flöte");
-        assert_eq!(slug("FLÖTE"), "flöte"); // full case fold, not just ASCII
-        assert_eq!(slug("ピアノ 2"), "ピアノ-2");
-        assert_eq!(slug("a<b>c:d"), "a-b-c-d");
+        assert_eq!(slug("Yamaha Grand Piano", "preset"), "yamaha-grand-piano");
+        assert_eq!(slug("E.Piano (bright)!", "preset"), "e-piano-bright");
+        assert_eq!(slug("snare_2-alt", "preset"), "snare_2-alt");
+        assert_eq!(slug("Flöte", "preset"), "flöte");
+        assert_eq!(slug("FLÖTE", "preset"), "flöte"); // full case fold, not just ASCII
+        assert_eq!(slug("ピアノ 2", "preset"), "ピアノ-2");
+        assert_eq!(slug("a<b>c:d", "preset"), "a-b-c-d");
     }
 
     #[test]
     fn slug_should_fall_back_when_name_has_no_usable_characters() {
         // given / when / then
-        assert_eq!(slug(""), "preset");
-        assert_eq!(slug("!!!"), "preset");
+        assert_eq!(slug("", "preset"), "preset");
+        assert_eq!(slug("!!!", "preset"), "preset");
+        assert_eq!(slug("", "sample"), "sample");
     }
 
     #[test]

@@ -38,6 +38,7 @@
 pub mod builder;
 pub mod edit;
 pub mod error;
+pub mod export;
 pub mod extract;
 pub mod merge;
 pub mod model;

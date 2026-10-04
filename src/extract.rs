@@ -188,6 +188,26 @@ fn set_info_text(info: &mut Vec<crate::model::InfoChunk>, id: [u8; 4], text: &st
     }
 }
 
+/// Indices (into `font.samples`, ascending) of every sample the selected
+/// presets reach, including mutual stereo partners — the exact sample set
+/// [`extract`] would keep, without building the extracted font.
+///
+/// # Errors
+///
+/// Returns [`Error::EmptySelection`] when nothing matches, or
+/// [`Error::IndexOutOfBounds`] for dangling references unless
+/// `options.salvage` is set (dangling references are then skipped).
+pub fn reachable_sample_indices(
+    font: &SoundFont,
+    selection: &Selection,
+    options: &Options,
+) -> Result<Vec<usize>, Error> {
+    let presets = selected_presets(font, selection)?;
+    let instruments = reachable_instruments(font, &presets, options.salvage)?;
+    let samples = reachable_samples(font, &instruments, options.salvage)?;
+    Ok(samples.into_iter().collect())
+}
+
 fn selected_presets(font: &SoundFont, selection: &Selection) -> Result<Vec<usize>, Error> {
     let kept: Vec<usize> = font
         .presets
@@ -512,22 +532,7 @@ fn relocate_compressed(
     data_24: Option<&mut Vec<u8>>,
     salvage: bool,
 ) -> Result<(), Error> {
-    let (start, end) = if salvage {
-        let total = font.sample_data.len();
-        let start = (sample.start as usize).min(total);
-        (start, (sample.end as usize).clamp(start, total))
-    } else {
-        (sample.start as usize, sample.end as usize)
-    };
-    let stream = font
-        .sample_data
-        .get(start..end)
-        .ok_or(Error::IndexOutOfBounds {
-            what: "compressed sample data range",
-            index: end,
-            max: font.sample_data.len(),
-        })?;
-    let pcm = match crate::sf3::decode_ogg(&sample.name.to_display(), stream) {
+    let pcm = match crate::sf3::decode_sample(font, sample, salvage) {
         Ok(pcm) => pcm,
         Err(_) if salvage => Vec::new(),
         Err(error) => return Err(error),
@@ -1431,6 +1436,55 @@ mod tests {
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0].instruments, vec![]);
         assert!(!has_errors(&validate(&parts[0])));
+    }
+
+    #[test]
+    fn reachable_sample_indices_should_keep_original_numbering_when_selecting() {
+        // given: strings use the stereo pair at original indices 1 and 2
+        let font = test_font();
+
+        // when
+        let strings =
+            reachable_sample_indices(&font, &select_pattern("strings"), &Options::default())
+                .unwrap();
+        let drums =
+            reachable_sample_indices(&font, &select_pattern("kit"), &Options::default()).unwrap();
+
+        // then
+        assert_eq!(strings, vec![1, 2]);
+        assert_eq!(drums, vec![3]);
+    }
+
+    #[test]
+    fn reachable_sample_indices_should_fail_when_selection_matches_nothing() {
+        // given
+        let font = test_font();
+
+        // when
+        let result =
+            reachable_sample_indices(&font, &select_pattern("accordion"), &Options::default());
+
+        // then
+        assert!(matches!(result, Err(Error::EmptySelection)));
+    }
+
+    #[test]
+    fn reachable_sample_indices_should_skip_dangling_reference_when_salvaging() {
+        // given: the piano instrument points at a missing sample
+        let mut font = test_font();
+        font.instruments[0].zones[0].gens[0].amount = 99;
+        let salvage = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let strict = reachable_sample_indices(&font, &select_pattern("piano"), &Options::default());
+        let salvaged = reachable_sample_indices(&font, &select_pattern("piano"), &salvage).unwrap();
+
+        // then
+        assert!(matches!(strict, Err(Error::IndexOutOfBounds { .. })));
+        assert_eq!(salvaged, Vec::<usize>::new());
     }
 
     #[test]
