@@ -22,24 +22,25 @@ pub const SAMPLE_TYPE_ROM: u16 = 0x8000;
 /// `sfSampleType` bits that indicate the sample participates in a linked
 /// (stereo or chained) pair: `rightSample` (2), `leftSample` (4), `linkedSample` (8).
 pub const SAMPLE_TYPE_LINKED_MASK: u16 = 2 | 4 | 8;
-/// `sfSampleType` flag marking an Ogg-Vorbis-compressed sample (the SF3
-/// convention established by `MuseScore`; `dwStart`/`dwEnd` are then byte
-/// offsets of the compressed stream, and loop points are relative to the
-/// decoded sample).
+/// `sfSampleType` flag marking an Ogg-Vorbis-compressed sample.
+///
+/// This is the SF3 convention established by `MuseScore`: `dwStart`/`dwEnd`
+/// are then byte offsets of the compressed stream, and loop points are
+/// relative to the decoded sample.
 pub const SAMPLE_TYPE_COMPRESSED: u16 = 0x10;
 
 /// On-disk record sizes in bytes, used by the parser and writer.
 pub(crate) mod record {
-    pub(crate) const PHDR: usize = 38;
-    pub(crate) const BAG: usize = 4;
-    pub(crate) const MOD: usize = 10;
-    pub(crate) const GEN: usize = 4;
-    pub(crate) const INST: usize = 22;
-    pub(crate) const SHDR: usize = 46;
+    pub const PHDR: usize = 38;
+    pub const BAG: usize = 4;
+    pub const MOD: usize = 10;
+    pub const GEN: usize = 4;
+    pub const INST: usize = 22;
+    pub const SHDR: usize = 46;
 }
 
 /// A fixed-size, NUL-padded name exactly as stored in SF2 records.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FixedName(pub [u8; NAME_LEN]);
 
 impl FixedName {
@@ -187,25 +188,25 @@ pub struct SampleHeader {
 impl SampleHeader {
     /// Whether the sample lives in ROM (no data in the `smpl` chunk).
     #[must_use]
-    pub fn is_rom(&self) -> bool {
+    pub const fn is_rom(&self) -> bool {
         self.sample_type & SAMPLE_TYPE_ROM != 0
     }
 
     /// Whether the sample is one half of a linked (stereo/chained) pair.
     #[must_use]
-    pub fn is_linked(&self) -> bool {
+    pub const fn is_linked(&self) -> bool {
         self.sample_type & SAMPLE_TYPE_LINKED_MASK != 0
     }
 
     /// Whether the sample data is an SF3 Ogg-Vorbis stream.
     #[must_use]
-    pub fn is_compressed(&self) -> bool {
+    pub const fn is_compressed(&self) -> bool {
         self.sample_type & SAMPLE_TYPE_COMPRESSED != 0
     }
 
     /// Length of the sample in sample points.
     #[must_use]
-    pub fn len_points(&self) -> u32 {
+    pub const fn len_points(&self) -> u32 {
         self.end.saturating_sub(self.start)
     }
 
@@ -247,7 +248,7 @@ pub struct SoundFont {
 impl SoundFont {
     /// Number of 16-bit sample points in the `smpl` chunk.
     #[must_use]
-    pub fn sample_points(&self) -> usize {
+    pub const fn sample_points(&self) -> usize {
         self.sample_data.len() / 2
     }
 

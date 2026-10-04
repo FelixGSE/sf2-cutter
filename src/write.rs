@@ -53,7 +53,7 @@ pub fn write(font: &SoundFont) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Size in bytes that [`write`] will produce for this font.
+/// Size in bytes that [`write()`] will produce for this font.
 #[must_use]
 pub fn file_size(font: &SoundFont) -> u64 {
     let info_body: u64 = font.info.iter().map(|c| chunk_size(c.data.len())).sum();
@@ -78,7 +78,7 @@ pub fn file_size(font: &SoundFont) -> u64 {
     12 + 3 * 12 + info_body + sdta_body + pdta_body
 }
 
-fn chunk_size(payload: usize) -> u64 {
+const fn chunk_size(payload: usize) -> u64 {
     8 + payload as u64 + (payload & 1) as u64
 }
 
@@ -105,7 +105,7 @@ struct FlatZones {
 }
 
 impl FlatZones {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             bags: Vec::new(),
             gens: Vec::new(),

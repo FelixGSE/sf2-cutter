@@ -406,11 +406,13 @@ fn remap_or_sanitize_link(
     sample_map: &BTreeMap<usize, u16>,
 ) -> Result<(), Error> {
     if let Some(partner) = font.mutual_link(old_index) {
-        header.sample_link = *sample_map.get(&partner).ok_or(Error::IndexOutOfBounds {
-            what: "sample link",
-            index: partner,
-            max: sample_map.len().saturating_sub(1),
-        })?;
+        header.sample_link = *sample_map
+            .get(&partner)
+            .ok_or_else(|| Error::IndexOutOfBounds {
+                what: "sample link",
+                index: partner,
+                max: sample_map.len().saturating_sub(1),
+            })?;
     } else if header.is_linked() {
         header.sample_type = (header.sample_type & SAMPLE_TYPE_ROM) | 1;
         header.sample_link = 0;
@@ -439,7 +441,7 @@ fn relocate_sample(
     let pcm = font
         .sample_data
         .get(start * 2..end * 2)
-        .ok_or(Error::IndexOutOfBounds {
+        .ok_or_else(|| Error::IndexOutOfBounds {
             what: "sample data range",
             index: end,
             max: font.sample_points(),
@@ -452,7 +454,7 @@ fn relocate_sample(
             .sample_data_24
             .as_ref()
             .and_then(|d| d.get(start..end))
-            .ok_or(Error::IndexOutOfBounds {
+            .ok_or_else(|| Error::IndexOutOfBounds {
                 what: "sm24 data range",
                 index: end,
                 max: font.sample_data_24.as_ref().map_or(0, Vec::len),

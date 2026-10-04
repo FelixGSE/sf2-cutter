@@ -1,12 +1,21 @@
-//! In-place edits on a [`SoundFont`]: move presets to new `bank:program`
-//! addresses and rename them. Used by the CLI after extraction or merging,
-//! but address the output font directly, so they compose with anything.
+//! In-place edits on a [`SoundFont`]: move and rename presets.
+//!
+//! Used by the CLI after extraction or merging, but the functions address the
+//! font directly, so they compose with anything.
 
 use std::collections::HashMap;
 
 use crate::error::Error;
-use crate::model::{FixedName, SoundFont};
+use crate::model::{FixedName, Preset, SoundFont};
 use crate::select::PresetSpec;
+
+/// The `bank:program` address of a preset.
+const fn address_of(preset: &Preset) -> PresetSpec {
+    PresetSpec {
+        bank: preset.bank,
+        program: preset.program,
+    }
+}
 
 /// Applies all moves simultaneously (so `0:0=0:1` plus `0:1=0:0` swaps).
 ///
@@ -22,9 +31,9 @@ pub fn remap_presets(
     font: &mut SoundFont,
     moves: &[(PresetSpec, PresetSpec)],
 ) -> Result<(), Error> {
-    let mut by_source: HashMap<(u16, u16), PresetSpec> = HashMap::new();
+    let mut by_source: HashMap<PresetSpec, PresetSpec> = HashMap::new();
     for (from, to) in moves {
-        if by_source.insert((from.bank, from.program), *to).is_some() {
+        if by_source.insert(*from, *to).is_some() {
             return Err(Error::DuplicateMoveSource {
                 bank: from.bank,
                 program: from.program,
@@ -52,7 +61,7 @@ pub fn remap_presets(
     let targets: Vec<Option<PresetSpec>> = font
         .presets
         .iter()
-        .map(|preset| by_source.get(&(preset.bank, preset.program)).copied())
+        .map(|preset| by_source.get(&address_of(preset)).copied())
         .collect();
     for (preset, target) in font.presets.iter_mut().zip(&targets) {
         if let Some(target) = target {
@@ -61,12 +70,12 @@ pub fn remap_presets(
         }
     }
 
-    let mut occupancy: HashMap<(u16, u16), usize> = HashMap::new();
+    let mut occupancy: HashMap<PresetSpec, usize> = HashMap::new();
     for preset in &font.presets {
-        *occupancy.entry((preset.bank, preset.program)).or_insert(0) += 1;
+        *occupancy.entry(address_of(preset)).or_insert(0) += 1;
     }
     for (index, preset) in font.presets.iter().enumerate() {
-        if was_moved[index] && occupancy[&(preset.bank, preset.program)] > 1 {
+        if was_moved[index] && occupancy[&address_of(preset)] > 1 {
             return Err(Error::MoveCollision {
                 bank: preset.bank,
                 program: preset.program,

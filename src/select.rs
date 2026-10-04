@@ -14,7 +14,7 @@ use crate::model::Preset;
 pub const DRUM_BANK: u16 = 128;
 
 /// A `BANK:PROG` preset address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PresetSpec {
     /// MIDI bank number.
     pub bank: u16,
@@ -72,7 +72,7 @@ impl Selection {
     }
 
     /// Keep every preset on the percussion bank ([`DRUM_BANK`]).
-    pub fn set_keep_drums(&mut self, keep: bool) {
+    pub const fn set_keep_drums(&mut self, keep: bool) {
         self.keep_drums = keep;
     }
 

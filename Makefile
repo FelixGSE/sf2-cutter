@@ -2,7 +2,7 @@
 
 FUZZ_SECONDS ?= 120
 
-.PHONY: fmt fmt-check lint test coverage coverage-html mutants fuzz check
+.PHONY: fmt fmt-check lint test doc coverage coverage-html mutants fuzz check
 
 fmt:
 	cargo fmt --all
@@ -19,6 +19,9 @@ test:
 # CARGO_INCREMENTAL=0: incremental codegen hard-links object files, which
 # fails with EACCES on virtiofs mounts (macOS/Lima docker); coverage gains
 # nothing from incremental builds anyway.
+doc:
+	RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
+
 coverage:
 	CARGO_INCREMENTAL=0 cargo llvm-cov --all-features --fail-under-lines 80
 
@@ -39,4 +42,4 @@ fuzz:
 	cargo +nightly fuzz run parse -- -max_total_time=$(FUZZ_SECONDS)
 	cargo +nightly fuzz run roundtrip -- -max_total_time=$(FUZZ_SECONDS)
 
-check: fmt-check lint test coverage
+check: fmt-check lint test doc coverage
