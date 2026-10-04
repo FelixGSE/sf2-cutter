@@ -43,6 +43,8 @@ pub fn merge(fonts: &[SoundFont], rename: Option<&str>) -> Result<SoundFont, Err
             u16::try_from(out.samples.len()).map_err(|_| Error::TooManyRecords("samples"))?;
         let point_offset =
             u32::try_from(out.sample_data.len() / 2).map_err(|_| Error::TooLarge("smpl"))?;
+        let byte_offset =
+            u32::try_from(out.sample_data.len()).map_err(|_| Error::TooLarge("smpl"))?;
 
         for preset in &font.presets {
             out.presets.push(Preset {
@@ -57,10 +59,22 @@ pub fn merge(fonts: &[SoundFont], rename: Option<&str>) -> Result<SoundFont, Err
             });
         }
         for sample in &font.samples {
-            out.samples
-                .push(shift_sample(sample, sample_offset, point_offset)?);
+            out.samples.push(shift_sample(
+                sample,
+                sample_offset,
+                point_offset,
+                byte_offset,
+            )?);
         }
         out.sample_data.extend_from_slice(&font.sample_data);
+        // Keep the next font's point offsets exact (and sm24 aligned) even if
+        // this input's smpl had an odd byte length, as raw SF3 streams can.
+        if out.sample_data.len() % 2 == 1 {
+            out.sample_data.push(0);
+            if let Some(data_24) = &mut out.sample_data_24 {
+                data_24.push(0);
+            }
+        }
         append_sm24(&mut out, font);
         ensure_addressable(out.instruments.len(), "instruments")?;
         ensure_addressable(out.samples.len(), "samples")?;
@@ -76,14 +90,17 @@ fn ensure_addressable(count: usize, what: &'static str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Raises `ifil` to 2.04 when it is older (required for `sm24` to be used).
+/// Raises `ifil` to 2.04 when it is older or malformed (required for `sm24`
+/// to be used).
 fn ensure_version_2_04(info: &mut [crate::model::InfoChunk]) {
     if let Some(chunk) = info.iter_mut().find(|c| c.id == *b"ifil") {
-        let old = (
-            u16::from_le_bytes([chunk.data[0], chunk.data[1]]),
-            u16::from_le_bytes([chunk.data[2], chunk.data[3]]),
-        );
-        if chunk.data.len() >= 4 && old < (2, 4) {
+        let old = (chunk.data.len() >= 4).then(|| {
+            (
+                u16::from_le_bytes([chunk.data[0], chunk.data[1]]),
+                u16::from_le_bytes([chunk.data[2], chunk.data[3]]),
+            )
+        });
+        if old.is_none_or(|version| version < (2, 4)) {
             chunk.data = vec![2, 0, 4, 0];
         }
     }
@@ -120,11 +137,14 @@ fn shift_zones(zones: &[Zone], ref_oper: u16, offset: u16) -> Result<Vec<Zone>, 
 }
 
 /// Clones a sample header with its link and (for RAM samples) its data
-/// offsets shifted into the merged address space.
+/// offsets shifted into the merged address space. SF3-compressed samples use
+/// BYTE offsets for their Ogg stream and decoded-relative loop points, so
+/// they shift by bytes and keep their loops.
 fn shift_sample(
     sample: &SampleHeader,
     sample_offset: u16,
     point_offset: u32,
+    byte_offset: u32,
 ) -> Result<SampleHeader, Error> {
     let mut header = sample.clone();
     if header.is_linked() {
@@ -133,7 +153,14 @@ fn shift_sample(
             .checked_add(sample_offset)
             .ok_or(Error::TooManyRecords("merged sample links"))?;
     }
-    if !header.is_rom() {
+    if header.is_rom() {
+        return Ok(header);
+    }
+    if header.is_compressed() {
+        let shift = |byte: u32| byte.checked_add(byte_offset).ok_or(Error::TooLarge("smpl"));
+        header.start = shift(header.start)?;
+        header.end = shift(header.end)?;
+    } else {
         let shift = |point: u32| {
             point
                 .checked_add(point_offset)
@@ -315,6 +342,129 @@ mod tests {
         assert_eq!(merged.name().as_deref(), Some("Combined"));
         let isft = String::from_utf8_lossy(merged.info_chunk(*b"ISFT").unwrap()).to_string();
         assert!(isft.contains("sf2-cutter v"));
+    }
+
+    #[test]
+    fn merge_should_shift_compressed_offsets_by_bytes_when_merging_sf3_input() {
+        // given: a plain font followed by an SF3-style font whose compressed
+        // sample's start/end are byte offsets and loops decoded-relative
+        let first = simple_font("plain", 0, 0, 100);
+        let mut second = simple_font("deep", 0, 1, 30);
+        if let Some(chunk) = second.info.iter_mut().find(|c| c.id == *b"ifil") {
+            chunk.data = vec![3, 0, 0, 0];
+        }
+        second.samples[0].sample_type = crate::model::SAMPLE_TYPE_COMPRESSED | 1;
+        second.samples[0].start = 0;
+        second.samples[0].end = 50;
+        second.samples[0].start_loop = 10;
+        second.samples[0].end_loop = 90;
+
+        // when
+        let merged = merge(&[first.clone(), second], None).unwrap();
+
+        // then: byte shift for the stream, loops untouched
+        let first_bytes = u32::try_from(first.sample_data.len()).unwrap();
+        let compressed = &merged.samples[1];
+        assert_eq!(compressed.start, first_bytes);
+        assert_eq!(compressed.end, first_bytes + 50);
+        assert_eq!(compressed.start_loop, 10);
+        assert_eq!(compressed.end_loop, 90);
+        // and the plain first font kept point-based shifting (offset zero)
+        assert_eq!(merged.samples[0].start, first.samples[0].start);
+    }
+
+    #[test]
+    fn merge_should_pad_sample_data_when_input_length_is_odd() {
+        // given: a first font whose smpl chunk has an odd byte length
+        let mut first = SoundFont {
+            sample_data: vec![1, 2, 3],
+            ..SoundFont::default()
+        };
+        first.info = simple_font("x", 0, 0, 10).info;
+        let second = simple_font("snd", 0, 1, 20);
+        let second_start = second.samples[0].start;
+
+        // when
+        let merged = merge(&[first, second], None).unwrap();
+
+        // then: padded to even, so the second font's points stay exact
+        assert_eq!(merged.samples[0].start, 2 + second_start);
+        assert_eq!(merged.sample_data.len() % 2, 0);
+    }
+
+    #[test]
+    fn merge_should_not_pad_sample_data_when_length_is_already_even() {
+        // given: a first font with exactly 2 bytes (1 point) of sample data
+        let mut first = SoundFont {
+            sample_data: vec![1, 2],
+            ..SoundFont::default()
+        };
+        first.info = simple_font("x", 0, 0, 10).info;
+        let second = simple_font("snd", 0, 1, 20);
+        let second_len = second.sample_data.len();
+
+        // when
+        let merged = merge(&[first, second], None).unwrap();
+
+        // then: no spurious pad byte
+        assert_eq!(merged.sample_data.len(), 2 + second_len);
+        assert_eq!(
+            merged.samples[0].start,
+            1 + simple_font("snd", 0, 1, 20).samples[0].start
+        );
+    }
+
+    #[test]
+    fn merge_should_bump_version_when_first_font_has_truncated_ifil() {
+        // given: a malformed 2-byte ifil in the first font, sm24 in the second
+        let mut first = simple_font("broken", 0, 0, 50);
+        if let Some(chunk) = first.info.iter_mut().find(|c| c.id == *b"ifil") {
+            chunk.data = vec![2, 0];
+        }
+        let mut second = simple_font("deep", 0, 1, 50);
+        second.sample_data_24 = Some(vec![0; second.sample_points()]);
+
+        // when: must not panic, and must repair the version
+        let merged = merge(&[first, second], None).unwrap();
+
+        // then
+        assert_eq!(merged.version(), Some((2, 4)));
+    }
+
+    #[test]
+    fn merge_should_keep_ifil_bytes_when_version_is_already_2_04_with_extra_data() {
+        // given: an over-long ifil already at 2.04 (extra bytes preserved)
+        let mut first = simple_font("long", 0, 0, 50);
+        if let Some(chunk) = first.info.iter_mut().find(|c| c.id == *b"ifil") {
+            chunk.data = vec![2, 0, 4, 0, 9, 9];
+        }
+        let mut second = simple_font("deep", 0, 1, 50);
+        second.sample_data_24 = Some(vec![0; second.sample_points()]);
+
+        // when
+        let merged = merge(&[first, second], None).unwrap();
+
+        // then: not rewritten (2.04 is not below 2.04)
+        assert_eq!(merged.info_chunk(*b"ifil").unwrap(), &[2, 0, 4, 0, 9, 9]);
+    }
+
+    #[test]
+    fn merge_should_sit_exactly_at_index_limit_when_instruments_total_65536() {
+        // given: 65536 instruments split across two fonts
+        let mut big = SoundFontBuilder::new("big");
+        for i in 0..65_535u32 {
+            big.add_instrument(&format!("i{i}"), vec![]).unwrap();
+        }
+        let big = big.build();
+        let mut one = SoundFontBuilder::new("one");
+        one.add_instrument("last", vec![]).unwrap();
+        let one = one.build();
+
+        // when / then: 65536 total is addressable, one more is not
+        let merged = merge(&[big.clone(), one.clone()], None).unwrap();
+        assert_eq!(merged.instruments.len(), 65_536);
+        let result = merge(&[big, one.clone(), one], None);
+        assert!(matches!(result, Err(Error::TooManyRecords("instruments"))));
     }
 
     #[test]

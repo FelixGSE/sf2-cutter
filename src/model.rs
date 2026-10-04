@@ -208,6 +208,14 @@ impl SampleHeader {
     pub fn len_points(&self) -> u32 {
         self.end.saturating_sub(self.start)
     }
+
+    /// Bytes this sample occupies in the `smpl` chunk: SF3-compressed
+    /// streams store `end - start` bytes, PCM stores two bytes per point.
+    #[must_use]
+    pub fn stored_bytes(&self) -> u64 {
+        let len = u64::from(self.len_points());
+        if self.is_compressed() { len } else { len * 2 }
+    }
 }
 
 /// A raw `INFO` sub-chunk, preserved verbatim and in order.
@@ -409,6 +417,17 @@ mod tests {
         // given / when / then
         assert!(sample_header_with_type(SAMPLE_TYPE_COMPRESSED | 1).is_compressed());
         assert!(!sample_header_with_type(1).is_compressed());
+    }
+
+    #[test]
+    fn sample_header_should_report_stored_bytes_when_compressed_or_plain() {
+        // given
+        let mut header = sample_header_with_type(1); // 100 points -> 200 bytes
+
+        // when / then
+        assert_eq!(header.stored_bytes(), 200);
+        header.sample_type = SAMPLE_TYPE_COMPRESSED | 1; // 100 BYTES of Ogg
+        assert_eq!(header.stored_bytes(), 100);
     }
 
     #[test]

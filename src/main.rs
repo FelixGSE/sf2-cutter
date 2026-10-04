@@ -565,7 +565,7 @@ fn cmd_extract(args: &ExtractArgs) -> CliResult {
 
     let predicted_size = write::file_size(&result);
     if args.json {
-        return extract_json_report(args, &font, &result, input_size, predicted_size);
+        return extract_json_report(args, &result, input_size, predicted_size);
     }
     let mut buf = String::new();
     let _ = writeln!(
@@ -612,23 +612,14 @@ fn write_output(output: &Path, font: &SoundFont) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// Writes the extract result (and optionally the output file) as JSON.
-fn extract_json_report(
-    args: &ExtractArgs,
-    font: &SoundFont,
+/// Builds the shared JSON report for extract and merge results.
+fn result_json(
     result: &SoundFont,
     input_size: u64,
     predicted_size: u64,
-) -> CliResult {
-    let _ = font;
-    let written = if args.dry_run {
-        None
-    } else {
-        let output = args.output.as_ref().ok_or("missing --output")?;
-        write_output(output, result)?;
-        Some(output.display().to_string())
-    };
-    emit_json(&ExtractJson {
+    written: Option<String>,
+) -> ExtractJson {
+    ExtractJson {
         kept: (0..result.presets.len())
             .map(|index| preset_json(result, index))
             .collect(),
@@ -637,7 +628,24 @@ fn extract_json_report(
         input_size,
         predicted_size,
         written,
-    })?;
+    }
+}
+
+/// Writes the extract result (and optionally the output file) as JSON.
+fn extract_json_report(
+    args: &ExtractArgs,
+    result: &SoundFont,
+    input_size: u64,
+    predicted_size: u64,
+) -> CliResult {
+    let written = if args.dry_run {
+        None
+    } else {
+        let output = args.output.as_ref().ok_or("missing --output")?;
+        write_output(output, result)?;
+        Some(output.display().to_string())
+    };
+    emit_json(&result_json(result, input_size, predicted_size, written))?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -648,12 +656,9 @@ fn cmd_merge(args: &MergeArgs) -> CliResult {
     for input in &args.inputs {
         let (font, size) = load_font(input)?;
         let issues = validate(&font);
+        print_issues(&issues);
         if has_errors(&issues) {
-            print_issues(&issues);
             return Err(format!("{} fails validation; aborting", input.display()).into());
-        }
-        if !args.json {
-            print_issues(&issues);
         }
         fonts.push(font);
         input_size += size;
@@ -669,16 +674,12 @@ fn cmd_merge(args: &MergeArgs) -> CliResult {
     let predicted_size = write::file_size(&result);
     write_output(&args.output, &result)?;
     if args.json {
-        emit_json(&ExtractJson {
-            kept: (0..result.presets.len())
-                .map(|index| preset_json(&result, index))
-                .collect(),
-            instruments: result.instruments.len(),
-            samples: result.samples.len(),
+        emit_json(&result_json(
+            &result,
             input_size,
             predicted_size,
-            written: Some(args.output.display().to_string()),
-        })?;
+            Some(args.output.display().to_string()),
+        ))?;
     } else {
         emit(&format!(
             "merged {} fonts: {} presets, {} instruments, {} samples\nsize: {input_size} -> {predicted_size} bytes\nwrote {}\n",
