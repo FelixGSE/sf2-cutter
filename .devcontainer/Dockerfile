@@ -44,5 +44,11 @@ RUN mkdir -p /home/$USERNAME/.claude /home/$USERNAME/.config/gh /home/$USERNAME/
     && mkdir -p /workspaces/sf2-cutter/target \
     && chown -R "$USERNAME:$USERNAME" /home/$USERNAME /workspaces
 
+# Claude Code installs itself user-locally into ~/.local/bin. Extend PATH here
+# rather than in devcontainer.json's containerEnv: ${containerEnv:PATH} is only
+# expanded in remoteEnv, so using it there writes the literal string and wipes
+# the image PATH (the container then dies on "sleep: not found").
+ENV PATH=/home/$USERNAME/.local/bin:$PATH
+
 USER $USERNAME
 WORKDIR /workspaces
