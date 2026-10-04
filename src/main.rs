@@ -111,6 +111,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Write every preset to its own .sf2 file
+    Split {
+        /// Input .sf2 file
+        input: PathBuf,
+        /// Output directory (created if missing)
+        #[arg(short, long, value_name = "DIR")]
+        output: PathBuf,
+        /// Emit a machine-readable JSON report on stdout
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions on stdout
     Completions {
         /// Target shell
@@ -184,6 +195,11 @@ fn run(cli: Cli) -> CliResult {
             renames,
             json,
         }),
+        Command::Split {
+            input,
+            output,
+            json,
+        } => cmd_split(&input, &output, json),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -649,6 +665,104 @@ fn extract_json_report(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Filesystem-safe slug of a preset name: ASCII alphanumerics, `-` and `_`
+/// are kept (lowercased), runs of anything else collapse to a single `-`;
+/// empty results fall back to "preset".
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+            if gap && !out.is_empty() {
+                out.push('-');
+            }
+            gap = false;
+            out.push(character.to_ascii_lowercase());
+        } else {
+            gap = true;
+        }
+    }
+    if out.is_empty() { "preset".into() } else { out }
+}
+
+/// Reserves `stem` in `used`, appending `-2`, `-3`, ... on collisions.
+fn unique_stem(used: &mut std::collections::HashSet<String>, stem: &str) -> String {
+    if used.insert(stem.to_string()) {
+        return stem.to_string();
+    }
+    let mut counter = 2u32;
+    loop {
+        let candidate = format!("{stem}-{counter}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SplitEntry {
+    bank: u16,
+    program: u16,
+    name: String,
+    file: String,
+    size: u64,
+}
+
+/// Writes every preset of the input into its own .sf2 under `output`.
+fn cmd_split(input: &Path, output: &Path, json: bool) -> CliResult {
+    let (font, _) = load_font(input)?;
+    let issues = validate(&font);
+    print_issues(&issues);
+    if has_errors(&issues) {
+        return Err("input font fails validation; aborting".into());
+    }
+
+    std::fs::create_dir_all(output)
+        .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
+    let parts = extract::split_presets(&font)?;
+    let mut used = std::collections::HashSet::new();
+    let mut entries = Vec::with_capacity(parts.len());
+    for (_, single) in &parts {
+        let preset = &single.presets[0];
+        let stem = unique_stem(
+            &mut used,
+            &format!(
+                "{:03}-{:03}-{}",
+                preset.bank,
+                preset.program,
+                slug(&preset.name.to_display())
+            ),
+        );
+        let path = output.join(format!("{stem}.sf2"));
+        write_output(&path, single)?;
+        entries.push(SplitEntry {
+            bank: preset.bank,
+            program: preset.program,
+            name: preset.name.to_display(),
+            file: path.display().to_string(),
+            size: write::file_size(single),
+        });
+    }
+
+    if json {
+        emit_json(&serde_json::json!({ "count": entries.len(), "written": entries }))?;
+    } else {
+        let mut buf = String::new();
+        for entry in &entries {
+            let _ = writeln!(buf, "wrote {}", entry.file);
+        }
+        let _ = writeln!(
+            buf,
+            "split {} presets into {}",
+            entries.len(),
+            output.display()
+        );
+        emit(&buf)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Loads, validates, merges, re-validates, and writes several fonts.
 fn cmd_merge(args: &MergeArgs) -> CliResult {
     let mut fonts = Vec::with_capacity(args.inputs.len());
@@ -789,6 +903,33 @@ mod tests {
         assert!(selection.matches(0, &named));
         assert!(selection.matches(1, &preset(8, 14)));
         assert!(selection.matches(2, &preset(128, 40)));
+    }
+
+    #[test]
+    fn slug_should_collapse_special_characters_when_name_is_messy() {
+        // given / when / then
+        assert_eq!(slug("Yamaha Grand Piano"), "yamaha-grand-piano");
+        assert_eq!(slug("E.Piano (bright)!"), "e-piano-bright");
+        assert_eq!(slug("snare_2-alt"), "snare_2-alt");
+        assert_eq!(slug("Flöte"), "fl-te");
+    }
+
+    #[test]
+    fn slug_should_fall_back_when_name_has_no_usable_characters() {
+        // given / when / then
+        assert_eq!(slug(""), "preset");
+        assert_eq!(slug("!!!"), "preset");
+    }
+
+    #[test]
+    fn unique_stem_should_append_counter_when_stem_collides() {
+        // given
+        let mut used = std::collections::HashSet::new();
+
+        // when / then
+        assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano");
+        assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-2");
+        assert_eq!(unique_stem(&mut used, "000-000-piano"), "000-000-piano-3");
     }
 
     #[test]
