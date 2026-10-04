@@ -3,9 +3,6 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "features": {
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
-  },
   "remoteUser": "dev",
   "containerUser": "dev",
   "updateRemoteUserUID": true,
@@ -19,10 +16,12 @@
     "source=sf2-cutter-cargo-registry,target=/usr/local/cargo/registry,type=volume",
     "source=sf2-cutter-target,target=/workspaces/sf2-cutter/target,type=volume",
     "source=sf2-cutter-claude-config,target=/home/dev/.claude,type=volume",
+    "source=sf2-cutter-dev-local,target=/home/dev/.local,type=volume",
     "source=sf2-cutter-gh-config,target=/home/dev/.config/gh,type=volume"
   ],
   "containerEnv": {
-    "CLAUDE_CONFIG_DIR": "/home/dev/.claude"
+    "CLAUDE_CONFIG_DIR": "/home/dev/.claude",
+    "PATH": "/home/dev/.local/bin:${containerEnv:PATH}"
   },
   "remoteEnv": {
     "GH_TOKEN": "${localEnv:GH_TOKEN}"
