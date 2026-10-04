@@ -66,6 +66,25 @@ pub fn extract(
     Ok(out)
 }
 
+/// Extracts every preset into its own single-preset font, lazily and in
+/// preset order — only one part is materialised at a time.
+///
+/// Each item goes through the normal extraction pipeline, so it is minimal,
+/// re-indexed, validated-by-construction, and provenance-stamped like any
+/// other extraction; items are `Err` under the same conditions as [`extract`]
+/// (never [`Error::EmptySelection`], since each selection is a concrete
+/// preset index). `options.salvage` applies per part.
+pub fn split_presets<'a>(
+    font: &'a SoundFont,
+    options: &'a Options,
+) -> impl Iterator<Item = Result<SoundFont, Error>> + 'a {
+    (0..font.presets.len()).map(move |index| {
+        let mut selection = Selection::new();
+        selection.add_index(index);
+        extract(font, &selection, options)
+    })
+}
+
 /// Unique bytes of non-ROM sample data reachable from one preset; the basis
 /// for the per-preset size estimate in listings. Dangling references are
 /// ignored rather than reported.
@@ -1356,6 +1375,62 @@ mod tests {
         // then: one LSB byte per output sample point, exactly
         let points = result.sample_points();
         assert_eq!(result.sample_data_24.unwrap().len(), points);
+    }
+
+    #[test]
+    fn split_should_produce_one_valid_font_per_preset_when_font_has_presets() {
+        // given
+        let font = test_font();
+
+        // when
+        let parts: Vec<SoundFont> = split_presets(&font, &Options::default())
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        // then: one single-preset font each, original addresses, all clean
+        assert_eq!(parts.len(), 3);
+        for (index, single) in parts.iter().enumerate() {
+            assert_eq!(single.presets.len(), 1);
+            assert_eq!(single.presets[0].bank, font.presets[index].bank);
+            assert_eq!(single.presets[0].program, font.presets[index].program);
+            assert!(!has_errors(&validate(single)));
+        }
+        // the piano split must not drag along strings or drum samples
+        assert_eq!(parts[0].samples.len(), 1);
+    }
+
+    #[test]
+    fn split_should_yield_nothing_when_font_has_no_presets() {
+        // given
+        let mut font = test_font();
+        font.presets.clear();
+
+        // when
+        let count = split_presets(&font, &Options::default()).count();
+
+        // then
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn split_should_salvage_each_preset_when_options_enable_it() {
+        // given: a dangling instrument reference in the first preset
+        let mut font = test_font();
+        font.presets[0].zones[0].gens[0].amount = 99;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let parts: Vec<SoundFont> = split_presets(&font, &options)
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        // then: the broken preset degrades instead of failing the stream
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].instruments, vec![]);
+        assert!(!has_errors(&validate(&parts[0])));
     }
 
     #[test]
