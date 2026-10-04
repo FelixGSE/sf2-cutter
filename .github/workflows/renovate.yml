@@ -1,0 +1,25 @@
+name: Renovate
+
+# Self-hosted Renovate: runs on a schedule with the RENOVATE_TOKEN secret and
+# applies renovate.json. A PAT (not GITHUB_TOKEN) is required so Renovate's
+# PRs trigger CI and can update workflow files.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: renovatebot/github-action@v46.3.6
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          RENOVATE_REPOSITORIES: FelixGSE/sf2-cutter
+          # renovate.json is already committed; skip the onboarding PR
+          RENOVATE_ONBOARDING: "false"
