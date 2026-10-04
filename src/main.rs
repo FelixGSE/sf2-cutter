@@ -665,14 +665,15 @@ fn extract_json_report(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Filesystem-safe slug of a preset name: ASCII alphanumerics, `-` and `_`
-/// are kept (lowercased), runs of anything else collapse to a single `-`;
+/// Filesystem-safe slug of a preset name: alphanumerics of any script plus
+/// `-` and `_` are kept (ASCII lowercased), runs of anything else — including
+/// every character Windows forbids in filenames — collapse to a single `-`;
 /// empty results fall back to "preset".
 fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
     for character in name.chars() {
-        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+        if character.is_alphanumeric() || character == '-' || character == '_' {
             if gap && !out.is_empty() {
                 out.push('-');
             }
@@ -707,6 +708,8 @@ struct SplitEntry {
     name: String,
     file: String,
     size: u64,
+    instruments: usize,
+    samples: usize,
 }
 
 /// Writes every preset of the input into its own .sf2 under `output`.
@@ -742,6 +745,8 @@ fn cmd_split(input: &Path, output: &Path, json: bool) -> CliResult {
             name: preset.name.to_display(),
             file: path.display().to_string(),
             size: write::file_size(single),
+            instruments: single.instruments.len(),
+            samples: single.samples.len(),
         });
     }
 
@@ -911,7 +916,9 @@ mod tests {
         assert_eq!(slug("Yamaha Grand Piano"), "yamaha-grand-piano");
         assert_eq!(slug("E.Piano (bright)!"), "e-piano-bright");
         assert_eq!(slug("snare_2-alt"), "snare_2-alt");
-        assert_eq!(slug("Flöte"), "fl-te");
+        assert_eq!(slug("Flöte"), "flöte");
+        assert_eq!(slug("ピアノ 2"), "ピアノ-2");
+        assert_eq!(slug("a<b>c:d"), "a-b-c-d");
     }
 
     #[test]
