@@ -105,8 +105,9 @@ Extraction notes:
 
 ## Installation
 
-Prebuilt binaries for Linux (x86_64/aarch64), macOS (arm64), and Windows are attached to
-each release, with sha256 checksums. Building from source:
+Prebuilt binaries for Linux (x86_64/aarch64, fully static), macOS (arm64), and Windows are
+attached to each release, with sha256 checksums, and include sf3 compression. Building from
+source:
 
 ```sh
 cargo install --path . --features sf3-write   # sf3-write enables the Vorbis encoder
