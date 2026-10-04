@@ -748,6 +748,15 @@ mod tests {
         // and an out-of-range stream is an error
         font.samples[0].end = total_bytes + 1;
         assert!(has_errors(&validate(&font)));
+
+        // an empty stream (start == end) is tolerated
+        font.samples[0].start = 10;
+        font.samples[0].end = 10;
+        assert!(!has_errors(&validate(&font)));
+
+        // but start past end is an error
+        font.samples[0].end = 9;
+        assert!(has_errors(&validate(&font)));
     }
 
     #[test]

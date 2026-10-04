@@ -87,7 +87,7 @@ pub fn preset_sample_bytes(font: &SoundFont, preset_index: usize) -> u64 {
         .iter()
         .filter_map(|&index| font.samples.get(index))
         .filter(|sample| !sample.is_rom())
-        .map(|sample| u64::from(sample.len_points()) * 2)
+        .map(crate::model::SampleHeader::stored_bytes)
         .sum()
 }
 
@@ -465,8 +465,15 @@ fn relocate_sample(
     header.end = new_start
         .checked_add(kept_points)
         .ok_or(Error::TooLarge("smpl"))?;
-    header.start_loop = shift_point(sample.start_loop, sample.start, new_start);
-    header.end_loop = shift_point(sample.end_loop, sample.start, new_start);
+    let origin = u32::try_from(start).map_err(|_| Error::TooLarge("smpl"))?;
+    header.start_loop = shift_point(sample.start_loop, origin, new_start);
+    header.end_loop = shift_point(sample.end_loop, origin, new_start);
+    if salvage {
+        // Salvage promises in-range output; the non-salvage path deliberately
+        // preserves the original (possibly warned-about) loop relationships.
+        header.start_loop = header.start_loop.clamp(header.start, header.end);
+        header.end_loop = header.end_loop.clamp(header.start_loop, header.end);
+    }
     Ok(())
 }
 
@@ -507,16 +514,21 @@ fn relocate_compressed(
     place_decoded(sample, header, &pcm, data, data_24)
 }
 
-/// Stub without the `sf3` feature: compressed samples cannot be extracted.
+/// Stub without the `sf3` feature: compressed samples cannot be decoded, so
+/// strict extraction fails; salvage degrades them to empty samples just like
+/// an undecodable stream does in the full build.
 #[cfg(not(feature = "sf3"))]
 fn relocate_compressed(
     _font: &SoundFont,
-    _sample: &SampleHeader,
-    _header: &mut SampleHeader,
-    _data: &mut Vec<u8>,
-    _data_24: Option<&mut Vec<u8>>,
-    _salvage: bool,
+    sample: &SampleHeader,
+    header: &mut SampleHeader,
+    data: &mut Vec<u8>,
+    data_24: Option<&mut Vec<u8>>,
+    salvage: bool,
 ) -> Result<(), Error> {
+    if salvage {
+        return place_decoded(sample, header, &[], data, data_24);
+    }
     Err(Error::Sf3Unsupported)
 }
 
@@ -531,6 +543,7 @@ fn place_decoded(
     data_24: Option<&mut Vec<u8>>,
 ) -> Result<(), Error> {
     let new_start = u32::try_from(data.len() / 2).map_err(|_| Error::TooLarge("smpl"))?;
+    data.reserve((pcm.len() + GUARD_POINTS) * 2);
     for value in pcm {
         data.extend_from_slice(&value.to_le_bytes());
     }
@@ -1157,6 +1170,190 @@ mod tests {
         assert_eq!(result.samples[0].len_points(), 0);
         assert!(!result.samples[0].is_compressed());
         assert!(!has_errors(&validate(&result)));
+    }
+
+    #[test]
+    fn extract_should_clamp_loop_points_when_salvaging_out_of_range_loops() {
+        // given: loops far past the (clamped) sample end
+        let mut font = test_font();
+        font.samples[0].end = u32::MAX;
+        font.samples[0].start_loop = u32::MAX - 100;
+        font.samples[0].end_loop = u32::MAX;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then: loops are inside the kept audio
+        let kept = &result.samples[0];
+        assert!(kept.start_loop >= kept.start);
+        assert!(kept.start_loop <= kept.end_loop);
+        assert!(kept.end_loop <= kept.end);
+    }
+
+    #[test]
+    fn preset_sample_bytes_should_not_double_size_when_sample_is_compressed() {
+        // given: a compressed sample spanning 100 BYTES of smpl
+        let mut font = test_font();
+        font.samples[0].sample_type = crate::model::SAMPLE_TYPE_COMPRESSED | 1;
+        font.samples[0].start = 0;
+        font.samples[0].end = 100;
+
+        // when
+        let bytes = preset_sample_bytes(&font, 0);
+
+        // then
+        assert_eq!(bytes, 100);
+    }
+
+    #[test]
+    fn extract_should_append_isft_when_chain_fits_exactly_under_limit() {
+        // given: prior + ':' + tool is exactly 255 bytes (fits with NUL)
+        let tool_len = concat!("sf2-cutter v", env!("CARGO_PKG_VERSION")).len();
+        let prior = "x".repeat(255 - 1 - tool_len);
+        let mut font = test_font();
+        font.info.push(crate::model::InfoChunk {
+            id: *b"ISFT",
+            data: format!("{prior}\0").into_bytes(),
+        });
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
+
+        // then
+        let text = String::from_utf8_lossy(result.info_chunk(*b"ISFT").unwrap()).to_string();
+        assert!(text.starts_with(&prior));
+        assert!(text.contains(":sf2-cutter v"));
+    }
+
+    #[test]
+    fn extract_should_reset_isft_when_chain_would_hit_256_bytes() {
+        // given: one byte longer than the previous test — chain would be 256
+        let tool = concat!("sf2-cutter v", env!("CARGO_PKG_VERSION"));
+        let prior = "x".repeat(255 - tool.len());
+        let mut font = test_font();
+        font.info.push(crate::model::InfoChunk {
+            id: *b"ISFT",
+            data: format!("{prior}\0").into_bytes(),
+        });
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &Options::default()).unwrap();
+
+        // then: falls back to the tool name alone (NUL-terminated, even-padded)
+        let mut expected = format!("{tool}\0").into_bytes();
+        if expected.len() % 2 == 1 {
+            expected.push(0);
+        }
+        assert_eq!(result.info_chunk(*b"ISFT").unwrap(), &expected[..]);
+    }
+
+    #[test]
+    fn extract_should_write_exact_inam_bytes_when_renamed() {
+        // given / when: odd text pads to even, even text does not
+        let font = test_font();
+        let odd = extract(
+            &font,
+            &select_pattern("piano"),
+            &Options {
+                rename: Some("Ab".into()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let even = extract(
+            &font,
+            &select_pattern("piano"),
+            &Options {
+                rename: Some("A".into()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+
+        // then: NUL-terminated, even-length payloads, nothing more
+        assert_eq!(odd.info_chunk(*b"INAM").unwrap(), b"Ab\0\0");
+        assert_eq!(even.info_chunk(*b"INAM").unwrap(), b"A\0");
+    }
+
+    #[cfg(not(feature = "sf3"))]
+    #[test]
+    fn extract_should_emit_empty_sample_when_sf3_disabled_and_salvaging() {
+        // given: a compressed sample in a build without the sf3 feature
+        let mut font = test_font();
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[0].start = 0;
+        font.samples[0].end = 100;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("piano"), &options).unwrap();
+
+        // then: degraded to an empty sample instead of aborting
+        assert_eq!(result.samples[0].len_points(), 0);
+        assert!(!result.samples[0].is_compressed());
+    }
+
+    #[test]
+    fn extract_should_downgrade_version_when_no_compressed_samples_remain() {
+        // given: an sf3-versioned font whose compressed sample is salvaged away
+        let mut builder = SoundFontBuilder::new("v3");
+        let sample = builder.add_sample("fake", &[9; 100], 44_100, 60).unwrap();
+        let instrument = builder
+            .add_instrument("I", vec![sample_zone(sample)])
+            .unwrap();
+        builder.add_preset("V3 Preset", 0, 0, vec![instrument_zone(instrument)]);
+        let mut font = builder.build();
+        font.info[0].data = vec![3, 0, 0, 0];
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[0].start = 0;
+        font.samples[0].end = 200;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("v3"), &options).unwrap();
+
+        // then: plain sf2 now, so ifil drops to 2.04 (and only ifil changes)
+        assert_eq!(result.version(), Some((2, 4)));
+        assert!(result.samples.iter().all(|s| !s.is_compressed()));
+        assert_eq!(result.info_chunk(*b"isng").unwrap(), b"EMu10K1\0");
+    }
+
+    #[test]
+    fn extract_should_keep_sm24_aligned_when_compressed_sample_is_salvaged() {
+        // given: usable sm24 plus a garbage compressed stream, salvaged
+        let mut builder = SoundFontBuilder::new("mix24");
+        let plain = builder.add_sample("plain", &[5; 100], 44_100, 60).unwrap();
+        let fake = builder.add_sample("fake", &[9; 100], 44_100, 60).unwrap();
+        let inst = builder
+            .add_instrument("I", vec![sample_zone(plain), sample_zone(fake)])
+            .unwrap();
+        builder.add_preset("Mix24", 0, 0, vec![instrument_zone(inst)]);
+        let mut font = builder.build();
+        font.sample_data_24 = Some(vec![1; font.sample_points()]);
+        font.samples[usize::from(fake)].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[usize::from(fake)].start = 0;
+        font.samples[usize::from(fake)].end = 50;
+        let options = Options {
+            salvage: true,
+            ..Options::default()
+        };
+
+        // when
+        let result = extract(&font, &select_pattern("mix24"), &options).unwrap();
+
+        // then: one LSB byte per output sample point, exactly
+        let points = result.sample_points();
+        assert_eq!(result.sample_data_24.unwrap().len(), points);
     }
 
     #[test]

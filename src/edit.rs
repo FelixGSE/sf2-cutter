@@ -207,8 +207,28 @@ mod tests {
         // when
         rename_preset(&mut font, spec(0, 0), "Concert Grand").unwrap();
 
-        // then
+        // then: only the addressed preset changes
         assert_eq!(font.presets[0].name.to_display(), "Concert Grand");
+        assert_eq!(font.presets[1].name.to_display(), "Slow Strings");
+        assert_eq!(font.presets[2].name.to_display(), "Standard Kit");
+    }
+
+    #[test]
+    fn remap_should_ignore_presets_sharing_only_bank_or_program_when_matching() {
+        // given: duplicates at 0:5 that share the bank of the move source
+        let mut font = test_font();
+        font.presets[1].bank = 0;
+        font.presets[1].program = 5;
+        font.presets[2].bank = 0;
+        font.presets[2].program = 5;
+
+        // when: moving 0:0 must not treat the 0:5 duplicates as moved
+        remap_presets(&mut font, &[(spec(0, 0), spec(9, 9))]).unwrap();
+
+        // then
+        assert_eq!(address_of(&font, "Bright Piano"), (9, 9));
+        assert_eq!((font.presets[1].bank, font.presets[1].program), (0, 5));
+        assert_eq!((font.presets[2].bank, font.presets[2].program), (0, 5));
     }
 
     #[test]
