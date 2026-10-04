@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-04
+
 ### Added
 
 - `extract`: pull selected presets into a new, minimal, validated `.sf2` —
@@ -38,7 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floor, mutation testing, libFuzzer targets, property-based tests, and
   fluidsynth round-trip audio verification
 
-## [0.1.0] — unreleased
-
-Initial development version; `v0.1.0` will be the first tagged release and
-this section will absorb the entries above at that point.
+[Unreleased]: https://github.com/FelixGSE/sf2-cutter/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/FelixGSE/sf2-cutter/releases/tag/v0.1.0
