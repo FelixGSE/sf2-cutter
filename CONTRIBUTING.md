@@ -71,3 +71,25 @@ Key invariants: `write(parse(x))` round-trips (byte-identical for canonical file
 every produced font passes `validate` before touching disk. SF3-compressed samples use
 BYTE offsets into `smpl` and decoded-relative loop points — anything touching sample
 offsets must branch on `SampleHeader::is_compressed()`.
+
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
+`<type>(<optional scope>): <description>` with types `feat`, `fix`, `docs`, `test`,
+`refactor`, `perf`, `build`, `ci`, `chore`, `revert`. Breaking changes carry a `!`
+(`feat!:`) or a `BREAKING CHANGE:` footer — these drive semantic versioning in the
+release process.
+
+Enforced locally by a `commit-msg` hook (`prek install`) and in CI on PR titles
+(squash merges adopt the title). History from before 2026-10-04 predates the
+convention and is deliberately left untouched — rewriting published history would
+orphan open PRs.
+
+## Code comments
+
+- `///` doc comments on every public item are mandatory (`missing_docs` is a warning
+  promoted to an error in CI), including `# Errors` on fallible functions.
+- Inline `//` comments state only what the code cannot: invariants, spec constraints
+  (cite the section, e.g. "SF2.04 §6.3"), and deliberate trade-offs. Never restate
+  what the next line does.
+- No commented-out code, no TODOs — unfinished work becomes an issue instead.

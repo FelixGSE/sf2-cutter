@@ -1,0 +1,9 @@
+# Git hooks, run by prek (https://prek.j178.dev - pre-commit compatible).
+# Install with: prek install
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
