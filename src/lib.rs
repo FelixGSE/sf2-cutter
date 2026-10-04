@@ -36,6 +36,8 @@
 #![forbid(unsafe_code)]
 
 pub mod builder;
+#[cfg(feature = "sf3")]
+pub mod convert;
 pub mod edit;
 pub mod error;
 pub mod export;

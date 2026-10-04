@@ -110,3 +110,54 @@ fn fluidsynth_should_render_audible_audio_when_playing_extracted_font() {
         "rendered audio is (nearly) silent: peak amplitude {peak}"
     );
 }
+
+#[cfg(feature = "sf3-write")]
+#[test]
+fn fluidsynth_should_render_audible_audio_when_playing_converted_sf3() {
+    // given: the same square-wave font, compressed to sf3
+    if std::process::Command::new("fluidsynth")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: fluidsynth not on PATH");
+        return;
+    }
+    let mut builder = SoundFontBuilder::new("Audio Test SF3");
+    let sample = builder
+        .add_sample("square", &square_wave(), 44_100, 60)
+        .unwrap();
+    let instrument = builder
+        .add_instrument("Square I", vec![sample_zone(sample)])
+        .unwrap();
+    builder.add_preset("Square Lead", 0, 0, vec![instrument_zone(instrument)]);
+    let sf3 = sf2_cutter::convert::compress(&builder.build(), 0.6).unwrap();
+
+    let dir = std::env::temp_dir();
+    let sf3_path = dir.join("sf2-cutter-audio-test.sf3");
+    let midi_path = dir.join("sf2-cutter-audio-test-sf3.mid");
+    let wav_path = dir.join("sf2-cutter-audio-test-sf3.wav");
+    std::fs::write(&sf3_path, write::write(&sf3).unwrap()).unwrap();
+    std::fs::write(&midi_path, tiny_midi()).unwrap();
+
+    // when
+    let output = std::process::Command::new("fluidsynth")
+        .args(["-ni", "-r", "44100", "-F"])
+        .arg(&wav_path)
+        .arg(&sf3_path)
+        .arg(&midi_path)
+        .output()
+        .unwrap();
+
+    // then
+    let log = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(
+        !log.contains("failed to load"),
+        "fluidsynth rejected the sf3: {log}"
+    );
+    let peak = wav_peak(&std::fs::read(&wav_path).unwrap());
+    assert!(
+        peak > 500,
+        "rendered sf3 audio is (nearly) silent: peak {peak}"
+    );
+}

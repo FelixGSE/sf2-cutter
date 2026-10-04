@@ -28,6 +28,8 @@ jobs:
         run: cargo test
       - name: Tests without default features (sf3 off)
         run: cargo test --no-default-features
+      - name: Tests with all features (sf3 encoder on)
+        run: cargo test --all-features
       - name: Documentation lints
         run: RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
       - name: Install cargo-llvm-cov

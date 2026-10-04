@@ -101,6 +101,14 @@ pub enum Error {
     /// The font contains SF3-compressed samples but the `sf3` feature is off.
     #[error("font contains compressed (SF3) samples; build with the `sf3` feature")]
     Sf3Unsupported,
+    /// A sample could not be encoded to an SF3 Ogg-Vorbis stream.
+    #[error("failed to encode sample `{name}`: {detail}")]
+    Sf3Encode {
+        /// Name of the offending sample.
+        name: String,
+        /// Encoder error detail.
+        detail: String,
+    },
     /// An SF3-compressed sample could not be decoded.
     #[error("failed to decode compressed sample `{name}`: {detail}")]
     Sf3Decode {
