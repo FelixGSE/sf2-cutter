@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use crate::model::{GEN_INSTRUMENT, GEN_SAMPLE_ID, SoundFont};
+use crate::model::{GEN_INSTRUMENT, GEN_SAMPLE_ID, SampleHeader, SoundFont};
 
 /// How severe an [`Issue`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -73,6 +73,7 @@ fn warning(issues: &mut Vec<Issue>, message: String) {
 fn check_info(font: &SoundFont, issues: &mut Vec<Issue>) {
     match font.version() {
         None => error(issues, "missing or malformed `ifil` version chunk".into()),
+        Some((3, _)) if font.samples.iter().any(SampleHeader::is_compressed) => {}
         Some((major, _)) if major != 2 => {
             warning(
                 issues,
@@ -198,6 +199,10 @@ fn check_zone_refs(
     }
 }
 
+/// Highest sample rate accepted as plausible (well above the 96/192 kHz
+/// studio rates); anything beyond is a corrupt header, and encoders reject it.
+const MAX_SAMPLE_RATE: u32 = 192_000;
+
 fn check_samples(font: &SoundFont, issues: &mut Vec<Issue>) {
     let total_points = font.sample_points() as u64;
     let total_bytes = font.sample_data.len() as u64;
@@ -206,6 +211,15 @@ fn check_samples(font: &SoundFont, issues: &mut Vec<Issue>) {
         let label = format!("sample {index} `{}`", sample.name);
         if sample.is_rom() {
             continue;
+        }
+        if sample.sample_rate == 0 || sample.sample_rate > MAX_SAMPLE_RATE {
+            error(
+                issues,
+                format!(
+                    "{label}: implausible sample rate {} Hz (expected 1..={MAX_SAMPLE_RATE})",
+                    sample.sample_rate
+                ),
+            );
         }
         if sample.is_compressed() {
             check_compressed_range(sample, total_bytes, &label, issues);
@@ -776,6 +790,38 @@ mod tests {
             i.message
                 .contains("compressed (SF3) sample in a version-2 font")
         }));
+    }
+
+    #[test]
+    fn validate_should_report_error_when_sample_rate_is_implausible() {
+        // given
+        let mut zero = test_font();
+        zero.samples[0].sample_rate = 0;
+        let mut huge = test_font();
+        huge.samples[0].sample_rate = 1_000_000;
+        let mut edge = test_font();
+        edge.samples[0].sample_rate = 192_000;
+
+        // when / then
+        assert!(has_errors(&validate(&zero)));
+        assert!(has_errors(&validate(&huge)));
+        assert!(!has_errors(&validate(&edge)));
+    }
+
+    #[test]
+    fn validate_should_accept_version_3_when_font_has_compressed_samples() {
+        // given: a version-3 font with one in-range compressed sample
+        let mut font = test_font();
+        font.info[0].data = vec![3, 0, 0, 0];
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[0].start = 0;
+        font.samples[0].end = 10;
+
+        // when
+        let issues = validate(&font);
+
+        // then
+        assert!(!issues.iter().any(|i| i.message.contains("major version")));
     }
 
     #[test]

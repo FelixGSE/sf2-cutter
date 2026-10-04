@@ -63,7 +63,17 @@ the output is still guaranteed to validate cleanly.
 
 SF3 fonts (Ogg-Vorbis-compressed, e.g. MuseScore_General.sf3) can be used as extraction
 *inputs*: kept samples are decoded to PCM and the output is a plain sf2 playable anywhere
-(enabled by the default `sf3` cargo feature; writing SF3 is not supported).
+(enabled by the default `sf3` cargo feature). Full conversion goes both ways:
+
+```sh
+sf2-cutter convert pianos.sf2 -o pianos.sf3 --quality 0.6   # compress (lossy, ~5-10x smaller)
+sf2-cutter convert MuseScore_General.sf3 -o general.sf2     # decompress to plain sf2
+```
+
+Compressing requires the `sf3-write` cargo feature (off by default — it builds the vendored
+aoTuV/libvorbis C encoder; release binaries ship with it enabled). Compression is lossy and
+drops any 24-bit `sm24` extension, and not every player reads `.sf3` (fluidsynth and MuseScore
+do; many hardware and DAW samplers do not).
 
 Selection criteria:
 
