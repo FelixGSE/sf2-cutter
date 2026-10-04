@@ -10,6 +10,9 @@ claude --version
 # Let git use gh's credentials (GH_TOKEN or `gh auth login`) for HTTPS remotes.
 if [[ -n "${GH_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
     gh auth setup-git
+    # The container has no SSH keys; rewrite SSH remotes to HTTPS so the
+    # token-based credential helper handles them (container-global only).
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
 else
     echo "==> gh: not authenticated (set GH_TOKEN on the host or run 'gh auth login')"
 fi
