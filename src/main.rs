@@ -159,7 +159,8 @@ enum Command {
         /// Output file; the target format is inferred from its extension
         #[arg(short, long)]
         output: PathBuf,
-        /// Target format when the output extension is not .sf2/.sf3
+        /// Target format; required when the output extension is not
+        /// .sf2/.sf3, and must agree with it when it is
         #[arg(long, value_enum)]
         to: Option<TargetFormat>,
         /// Vorbis quality for sf3 output: 0.0 (smallest) ..= 1.0 (best)
@@ -1022,6 +1023,13 @@ fn cmd_samples(args: &SamplesArgs) -> CliResult {
     Ok(ExitCode::SUCCESS)
 }
 
+const fn target_name(target: TargetFormat) -> &'static str {
+    match target {
+        TargetFormat::Sf2 => "sf2",
+        TargetFormat::Sf3 => "sf3",
+    }
+}
+
 /// Infers the conversion target from the output extension.
 fn infer_target(output: &Path) -> Option<TargetFormat> {
     match output.extension()?.to_str()? {
@@ -1056,7 +1064,18 @@ fn decompress_font(_font: &SoundFont) -> Result<SoundFont, Box<dyn std::error::E
 
 /// Converts a font between plain sf2 and compressed sf3.
 fn cmd_convert(input: &Path, output: &Path, to: Option<TargetFormat>, quality: f32) -> CliResult {
-    let Some(target) = to.or_else(|| infer_target(output)) else {
+    let inferred = infer_target(output);
+    if let (Some(requested), Some(implied)) = (to, inferred)
+        && requested != implied
+    {
+        return Err(format!(
+            "--to {} contradicts the output extension of {}",
+            target_name(requested),
+            output.display()
+        )
+        .into());
+    }
+    let Some(target) = to.or(inferred) else {
         return Err("cannot infer the target format; pass --to sf2|sf3".into());
     };
     if !(0.0..=1.0).contains(&quality) {
