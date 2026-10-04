@@ -1,6 +1,7 @@
 # Quality gates for sf2-cutter. `make check` is the full PR gate.
 
 FUZZ_SECONDS ?= 120
+COVERAGE_MIN ?= 80
 
 .PHONY: fmt fmt-check lint test doc coverage coverage-html mutants fuzz check
 
@@ -20,8 +21,9 @@ doc:
 	RUSTDOCFLAGS="-D warnings -D rustdoc::all" cargo doc --no-deps --all-features
 
 # Coverage gains nothing from incremental builds; keep them off there.
+# Override the floor with COVERAGE_MIN=NN.
 coverage:
-	CARGO_INCREMENTAL=0 cargo llvm-cov --all-features --fail-under-lines 80
+	CARGO_INCREMENTAL=0 cargo llvm-cov --all-features --fail-under-lines $(COVERAGE_MIN)
 
 coverage-html:
 	CARGO_INCREMENTAL=0 cargo llvm-cov --all-features --html --open

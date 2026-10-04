@@ -35,7 +35,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage floor
-        run: cargo llvm-cov --all-features --fail-under-lines 80
+        run: make coverage
+        env:
+          COVERAGE_MIN: "80"
 
   # Builds every release target exactly as release.yml does (including the
   # vendored C Vorbis encoder), so a broken target fails here instead of at
