@@ -23,3 +23,6 @@ jobs:
           RENOVATE_REPOSITORIES: FelixGSE/sf2-cutter
           # renovate.json is already committed; skip the onboarding PR
           RENOVATE_ONBOARDING: "false"
+          # Commit as the repo owner's noreply identity instead of Renovate's
+          # default author (which GitHub attributes to Mend's @renovate-bot)
+          RENOVATE_GIT_AUTHOR: "FelixGSE <FelixGSE@users.noreply.github.com>"
