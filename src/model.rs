@@ -16,6 +16,10 @@ pub const NAME_LEN: usize = 20;
 pub const GEN_INSTRUMENT: u16 = 41;
 /// Generator operator that links an instrument zone to a sample (spec: `sampleID`, 53).
 pub const GEN_SAMPLE_ID: u16 = 53;
+/// Generator operator restricting a zone to a MIDI key range (spec: `keyRange`, 43).
+pub const GEN_KEY_RANGE: u16 = 43;
+/// Generator operator restricting a zone to a velocity range (spec: `velRange`, 44).
+pub const GEN_VEL_RANGE: u16 = 44;
 
 /// `sfSampleType` flag marking a sample stored in ROM.
 pub const SAMPLE_TYPE_ROM: u16 = 0x8000;
@@ -39,6 +43,20 @@ pub(crate) mod record {
     pub const SHDR: usize = 46;
 }
 
+/// Decodes NUL-terminated text from an SF2 record or `INFO` chunk: the bytes
+/// up to the first NUL, as UTF-8 when valid and otherwise as Latin-1 (the
+/// spec says ASCII, but real-world fonts often store Latin-1 such as `0xA9`
+/// for `©`). Every byte maps to a character, so nothing is ever lost.
+#[must_use]
+pub fn decode_text(data: &[u8]) -> String {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    let text = &data[..end];
+    std::str::from_utf8(text).map_or_else(
+        |_| text.iter().map(|&b| char::from(b)).collect(),
+        str::to_string,
+    )
+}
+
 /// A fixed-size, NUL-padded name exactly as stored in SF2 records.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FixedName(pub [u8; NAME_LEN]);
@@ -54,11 +72,16 @@ impl FixedName {
         Self(bytes)
     }
 
-    /// Renders the name for display: bytes up to the first NUL, lossily decoded.
+    /// Renders the name for display (see [`decode_text`]).
     #[must_use]
     pub fn to_display(&self) -> String {
-        let end = self.0.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
-        String::from_utf8_lossy(&self.0[..end]).into_owned()
+        decode_text(&self.0)
+    }
+}
+
+impl serde::Serialize for FixedName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_display())
     }
 }
 
@@ -86,8 +109,111 @@ pub struct Generator {
     pub amount: u16,
 }
 
+/// A generator amount decoded according to the spec type of its operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum GeneratorValue {
+    /// `rangesType`: an inclusive low/high pair (`keyRange`, `velRange`).
+    Range {
+        /// Low end of the range.
+        lo: u8,
+        /// High end of the range.
+        hi: u8,
+    },
+    /// `wAmount`: an unsigned index (`instrument`, `sampleID`).
+    Unsigned(u16),
+    /// `shAmount`: a signed value (every other operator).
+    Signed(i16),
+}
+
+impl Generator {
+    /// The amount decoded per the spec type of this generator's operator.
+    #[must_use]
+    pub const fn value(&self) -> GeneratorValue {
+        let [lo, hi] = self.amount.to_le_bytes();
+        match self.oper {
+            GEN_KEY_RANGE | GEN_VEL_RANGE => GeneratorValue::Range { lo, hi },
+            GEN_INSTRUMENT | GEN_SAMPLE_ID => GeneratorValue::Unsigned(self.amount),
+            _ => GeneratorValue::Signed(i16::from_le_bytes([lo, hi])),
+        }
+    }
+}
+
+impl serde::Serialize for Generator {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut row = serializer.serialize_struct("Generator", 4)?;
+        row.serialize_field("oper", &self.oper)?;
+        row.serialize_field("name", &generator_name(self.oper))?;
+        row.serialize_field("amount", &self.amount)?;
+        row.serialize_field("value", &self.value())?;
+        row.end()
+    }
+}
+
+/// The spec name of a generator operator, when it is a defined one.
+#[must_use]
+pub const fn generator_name(oper: u16) -> Option<&'static str> {
+    Some(match oper {
+        0 => "startAddrsOffset",
+        1 => "endAddrsOffset",
+        2 => "startloopAddrsOffset",
+        3 => "endloopAddrsOffset",
+        4 => "startAddrsCoarseOffset",
+        5 => "modLfoToPitch",
+        6 => "vibLfoToPitch",
+        7 => "modEnvToPitch",
+        8 => "initialFilterFc",
+        9 => "initialFilterQ",
+        10 => "modLfoToFilterFc",
+        11 => "modEnvToFilterFc",
+        12 => "endAddrsCoarseOffset",
+        13 => "modLfoToVolume",
+        15 => "chorusEffectsSend",
+        16 => "reverbEffectsSend",
+        17 => "pan",
+        21 => "delayModLFO",
+        22 => "freqModLFO",
+        23 => "delayVibLFO",
+        24 => "freqVibLFO",
+        25 => "delayModEnv",
+        26 => "attackModEnv",
+        27 => "holdModEnv",
+        28 => "decayModEnv",
+        29 => "sustainModEnv",
+        30 => "releaseModEnv",
+        31 => "keynumToModEnvHold",
+        32 => "keynumToModEnvDecay",
+        33 => "delayVolEnv",
+        34 => "attackVolEnv",
+        35 => "holdVolEnv",
+        36 => "decayVolEnv",
+        37 => "sustainVolEnv",
+        38 => "releaseVolEnv",
+        39 => "keynumToVolEnvHold",
+        40 => "keynumToVolEnvDecay",
+        41 => "instrument",
+        43 => "keyRange",
+        44 => "velRange",
+        45 => "startloopAddrsCoarseOffset",
+        46 => "keynum",
+        47 => "velocity",
+        48 => "initialAttenuation",
+        50 => "endloopAddrsCoarseOffset",
+        51 => "coarseTune",
+        52 => "fineTune",
+        53 => "sampleID",
+        54 => "sampleModes",
+        56 => "scaleTuning",
+        57 => "exclusiveClass",
+        58 => "overridingRootKey",
+        _ => return None,
+    })
+}
+
 /// A modulator record (`sfModList`/`sfInstModList`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Modulator {
     /// Source modulator controller (`sfModSrcOper`).
     pub src_oper: u16,
@@ -102,7 +228,7 @@ pub struct Modulator {
 }
 
 /// A preset or instrument zone: a modulator list and a generator list.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct Zone {
     /// Generators, in on-disk order.
     pub gens: Vec<Generator>,
@@ -132,7 +258,7 @@ fn last_amount(gens: &[Generator], oper: u16) -> Option<u16> {
 }
 
 /// A preset (`phdr` record plus its resolved zones).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Preset {
     /// Preset name.
     pub name: FixedName,
@@ -151,7 +277,7 @@ pub struct Preset {
 }
 
 /// An instrument (`inst` record plus its resolved zones).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Instrument {
     /// Instrument name.
     pub name: FixedName,
@@ -159,9 +285,13 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
 }
 
-/// A sample header (`shdr` record). Offsets are in sample points (16-bit
-/// words) into the `smpl` chunk, not bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A sample header (`shdr` record).
+///
+/// For plain samples the offsets are in sample points (16-bit words) into the
+/// `smpl` chunk. For SF3-compressed samples ([`Self::is_compressed`]) `start`
+/// and `end` are BYTE offsets of the Ogg-Vorbis stream and the loop points
+/// are relative to the decoded audio.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SampleHeader {
     /// Sample name.
     pub name: FixedName,
@@ -226,6 +356,33 @@ pub struct InfoChunk {
     pub id: [u8; 4],
     /// Raw chunk payload.
     pub data: Vec<u8>,
+}
+
+impl InfoChunk {
+    /// The payload as text, when it is text: decoded per [`decode_text`] and
+    /// free of control characters other than line breaks and tabs. Binary
+    /// payloads such as the 4-byte `ifil` version yield `None`.
+    #[must_use]
+    pub fn text(&self) -> Option<String> {
+        let text = decode_text(&self.data);
+        let printable = !text.trim().is_empty()
+            && text
+                .chars()
+                .all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'));
+        printable.then_some(text)
+    }
+}
+
+/// Serialised as `{id, text, bytes}`.
+impl serde::Serialize for InfoChunk {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut row = serializer.serialize_struct("InfoChunk", 3)?;
+        row.serialize_field("id", &String::from_utf8_lossy(&self.id))?;
+        row.serialize_field("text", &self.text())?;
+        row.serialize_field("bytes", &self.data.len())?;
+        row.end()
+    }
 }
 
 /// A complete in-memory `SoundFont`.
@@ -312,9 +469,26 @@ impl SoundFont {
     /// Bank name from the `INAM` chunk, if present.
     #[must_use]
     pub fn name(&self) -> Option<String> {
-        let data = self.info_chunk(*b"INAM")?;
-        let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        Some(String::from_utf8_lossy(&data[..end]).into_owned())
+        self.info_chunk(*b"INAM").map(decode_text)
+    }
+}
+
+/// The structural dump format (`sf2-cutter dump`): name, version, `INFO`
+/// chunks, presets, instruments, and sample headers. Sample audio is
+/// summarised as byte counts rather than serialised.
+impl serde::Serialize for SoundFont {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut font = serializer.serialize_struct("SoundFont", 8)?;
+        font.serialize_field("name", &self.name())?;
+        font.serialize_field("version", &self.version())?;
+        font.serialize_field("info", &self.info)?;
+        font.serialize_field("sample_data_bytes", &self.sample_data.len())?;
+        font.serialize_field("sm24_bytes", &self.sample_data_24.as_ref().map(Vec::len))?;
+        font.serialize_field("presets", &self.presets)?;
+        font.serialize_field("instruments", &self.instruments)?;
+        font.serialize_field("samples", &self.samples)?;
+        font.end()
     }
 }
 
@@ -438,6 +612,231 @@ mod tests {
         assert!(sample_header_with_type(4).is_linked());
         assert!(sample_header_with_type(8).is_linked());
         assert!(!sample_header_with_type(1).is_linked());
+    }
+
+    #[test]
+    fn generator_name_should_match_spec_table_when_checking_every_operator() {
+        // given: SF2.04 section 8.1.2, operators 0..=58; None = unused/reserved
+        let spec: [Option<&str>; 61] = [
+            Some("startAddrsOffset"),
+            Some("endAddrsOffset"),
+            Some("startloopAddrsOffset"),
+            Some("endloopAddrsOffset"),
+            Some("startAddrsCoarseOffset"),
+            Some("modLfoToPitch"),
+            Some("vibLfoToPitch"),
+            Some("modEnvToPitch"),
+            Some("initialFilterFc"),
+            Some("initialFilterQ"),
+            Some("modLfoToFilterFc"),
+            Some("modEnvToFilterFc"),
+            Some("endAddrsCoarseOffset"),
+            Some("modLfoToVolume"),
+            None, // unused1
+            Some("chorusEffectsSend"),
+            Some("reverbEffectsSend"),
+            Some("pan"),
+            None, // unused2
+            None, // unused3
+            None, // unused4
+            Some("delayModLFO"),
+            Some("freqModLFO"),
+            Some("delayVibLFO"),
+            Some("freqVibLFO"),
+            Some("delayModEnv"),
+            Some("attackModEnv"),
+            Some("holdModEnv"),
+            Some("decayModEnv"),
+            Some("sustainModEnv"),
+            Some("releaseModEnv"),
+            Some("keynumToModEnvHold"),
+            Some("keynumToModEnvDecay"),
+            Some("delayVolEnv"),
+            Some("attackVolEnv"),
+            Some("holdVolEnv"),
+            Some("decayVolEnv"),
+            Some("sustainVolEnv"),
+            Some("releaseVolEnv"),
+            Some("keynumToVolEnvHold"),
+            Some("keynumToVolEnvDecay"),
+            Some("instrument"),
+            None, // reserved1
+            Some("keyRange"),
+            Some("velRange"),
+            Some("startloopAddrsCoarseOffset"),
+            Some("keynum"),
+            Some("velocity"),
+            Some("initialAttenuation"),
+            None, // reserved2
+            Some("endloopAddrsCoarseOffset"),
+            Some("coarseTune"),
+            Some("fineTune"),
+            Some("sampleID"),
+            Some("sampleModes"),
+            None, // reserved3
+            Some("scaleTuning"),
+            Some("exclusiveClass"),
+            Some("overridingRootKey"),
+            None, // unused5
+            None, // endOper
+        ];
+
+        // when / then
+        for (oper, expected) in (0u16..).zip(spec) {
+            assert_eq!(generator_name(oper), expected, "operator {oper}");
+        }
+        assert_eq!(generator_name(u16::MAX), None);
+    }
+
+    #[test]
+    fn decode_text_should_fall_back_to_latin1_when_bytes_are_not_utf8() {
+        // given / when / then
+        assert_eq!(decode_text(b"Caf\xe9 \xa9 2008\0junk"), "Café © 2008");
+        assert_eq!(decode_text("Flöte".as_bytes()), "Flöte");
+        assert_eq!(decode_text(b"plain"), "plain");
+    }
+
+    #[test]
+    fn info_text_should_return_text_when_payload_is_printable() {
+        // given
+        let chunk = |data: &[u8]| InfoChunk {
+            id: *b"ICMT",
+            data: data.to_vec(),
+        };
+
+        // when / then
+        assert_eq!(chunk(b"hello\0").text().as_deref(), Some("hello"));
+        assert_eq!(
+            chunk(b"line1\nline2\t!\0").text().as_deref(),
+            Some("line1\nline2\t!")
+        );
+        assert_eq!(
+            chunk(b"\xa9 Someone\0").text().as_deref(),
+            Some("© Someone")
+        );
+        assert_eq!(chunk(b"first\0second").text().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn info_text_should_return_none_when_payload_is_binary_or_blank() {
+        // given
+        let chunk = |data: &[u8]| InfoChunk {
+            id: *b"ifil",
+            data: data.to_vec(),
+        };
+
+        // when / then
+        assert_eq!(chunk(&[2, 0, 4, 0]).text(), None);
+        assert_eq!(chunk(b"").text(), None);
+        assert_eq!(chunk(b"   \0").text(), None);
+        assert_eq!(chunk(b"bell\x07\0").text(), None);
+    }
+
+    #[test]
+    fn soundfont_should_serialize_dump_structure_when_font_is_synthetic() {
+        // given
+        let font = crate::builder::test_font();
+
+        // when
+        let value = serde_json::to_value(&font).unwrap();
+
+        // then
+        assert_eq!(value["name"], "Fixture Font");
+        assert_eq!(value["version"], serde_json::json!([2, 4]));
+        assert_eq!(value["info"][0]["id"], "ifil");
+        assert_eq!(value["info"][0]["text"], serde_json::Value::Null);
+        assert_eq!(value["info"][0]["bytes"], 4);
+        assert_eq!(value["info"][2]["text"], "Fixture Font");
+        assert_eq!(value["sample_data_bytes"], font.sample_data.len());
+        assert_eq!(value["sm24_bytes"], serde_json::Value::Null);
+        assert_eq!(value["presets"][1]["program"], 48);
+        assert_eq!(
+            value["presets"][0]["zones"][0]["gens"][0]["name"],
+            "instrument"
+        );
+        assert_eq!(
+            value["instruments"][0]["zones"][0]["gens"][0]["name"],
+            "sampleID"
+        );
+        assert_eq!(value["samples"][0]["name"], "piano-c4");
+        assert_eq!(value["samples"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn generator_name_should_resolve_spec_operators_when_defined() {
+        // given / when / then
+        assert_eq!(generator_name(GEN_INSTRUMENT), Some("instrument"));
+        assert_eq!(generator_name(GEN_SAMPLE_ID), Some("sampleID"));
+        assert_eq!(generator_name(17), Some("pan"));
+        assert_eq!(generator_name(43), Some("keyRange"));
+        assert_eq!(generator_name(14), None);
+        assert_eq!(generator_name(999), None);
+    }
+
+    #[test]
+    fn generator_value_should_decode_per_spec_type_when_operator_varies() {
+        // given
+        let pan = Generator {
+            oper: 17,
+            amount: u16::from_le_bytes((-500i16).to_le_bytes()),
+        };
+        let key_range = Generator {
+            oper: GEN_KEY_RANGE,
+            amount: u16::from_le_bytes([24, 96]),
+        };
+        let instrument = Generator {
+            oper: GEN_INSTRUMENT,
+            amount: 40_000,
+        };
+
+        // when / then
+        assert_eq!(pan.value(), GeneratorValue::Signed(-500));
+        assert_eq!(key_range.value(), GeneratorValue::Range { lo: 24, hi: 96 });
+        assert_eq!(instrument.value(), GeneratorValue::Unsigned(40_000));
+    }
+
+    #[test]
+    fn generator_should_serialize_decoded_value_when_dumped() {
+        // given
+        let vel_range = Generator {
+            oper: GEN_VEL_RANGE,
+            amount: u16::from_le_bytes([1, 127]),
+        };
+        let tune = Generator {
+            oper: 51,
+            amount: u16::from_le_bytes((-12i16).to_le_bytes()),
+        };
+
+        // when
+        let vel_json = serde_json::to_value(vel_range).unwrap();
+        let tune_json = serde_json::to_value(tune).unwrap();
+
+        // then: raw amount kept, decoded value alongside
+        assert_eq!(vel_json["amount"], 32_513);
+        assert_eq!(vel_json["value"], serde_json::json!({"lo": 1, "hi": 127}));
+        assert_eq!(tune_json["value"], -12);
+    }
+
+    #[test]
+    fn generator_should_serialize_with_name_when_oper_is_known() {
+        // given
+        let known = Generator {
+            oper: GEN_INSTRUMENT,
+            amount: 7,
+        };
+        let unknown = Generator {
+            oper: 999,
+            amount: 1,
+        };
+
+        // when
+        let known_json = serde_json::to_value(known).unwrap();
+        let unknown_json = serde_json::to_value(unknown).unwrap();
+
+        // then
+        assert_eq!(known_json["name"], "instrument");
+        assert_eq!(known_json["amount"], 7);
+        assert_eq!(unknown_json["name"], serde_json::Value::Null);
     }
 
     #[test]

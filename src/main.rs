@@ -126,6 +126,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Dump the complete font structure as JSON on stdout
+    Dump {
+        /// Input .sf2 file
+        input: PathBuf,
+    },
     /// Generate shell completions on stdout
     Completions {
         /// Target shell
@@ -205,6 +210,7 @@ fn run(cli: Cli) -> CliResult {
             force,
             json,
         } => cmd_split(&input, &output, force, json),
+        Command::Dump { input } => cmd_dump(&input),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -340,6 +346,14 @@ fn validate_json(issues: &[Issue]) -> ValidateJson {
 
 fn emit_json<T: serde::Serialize>(value: &T) -> Result<(), Box<dyn std::error::Error>> {
     emit(&format!("{}\n", serde_json::to_string_pretty(value)?))
+}
+
+/// Dumps the full structure of a parseable font; deliberately no validation
+/// gate, so broken fonts can be inspected too.
+fn cmd_dump(input: &Path) -> CliResult {
+    let (font, _) = load_font(input)?;
+    emit_json(&font)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_list(input: &Path, json: bool) -> CliResult {
