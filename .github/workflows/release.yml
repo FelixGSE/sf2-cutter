@@ -28,6 +28,7 @@ jobs:
         with:
           bin: sf2-cutter
           target: ${{ matrix.target }}
+          features: sf3-write
           # Attach <asset>.sha256 files alongside each archive
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}

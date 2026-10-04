@@ -461,7 +461,7 @@ fn remap_or_sanitize_link(
 
 /// Copies one sample's audio (plus guard points) to the new `smpl` buffer and
 /// rewrites the header's offsets relative to its new position.
-fn relocate_sample(
+pub(crate) fn relocate_sample(
     font: &SoundFont,
     sample: &SampleHeader,
     header: &mut SampleHeader,
@@ -561,7 +561,7 @@ fn relocate_compressed(
 /// Appends decoded PCM (plus guard points) and rewrites the header as a
 /// plain uncompressed sample: absolute offsets, loops made absolute from
 /// SF3's decoded-sample-relative convention, compressed flag cleared.
-fn place_decoded(
+pub(crate) fn place_decoded(
     sample: &SampleHeader,
     header: &mut SampleHeader,
     pcm: &[i16],
