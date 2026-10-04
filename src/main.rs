@@ -118,6 +118,10 @@ enum Command {
         /// Output directory (created if missing)
         #[arg(short, long, value_name = "DIR")]
         output: PathBuf,
+        /// Split despite input validation errors: dangling references are
+        /// dropped and out-of-range sample offsets clamped per preset
+        #[arg(long)]
+        force: bool,
         /// Emit a machine-readable JSON report on stdout
         #[arg(long)]
         json: bool,
@@ -198,8 +202,9 @@ fn run(cli: Cli) -> CliResult {
         Command::Split {
             input,
             output,
+            force,
             json,
-        } => cmd_split(&input, &output, json),
+        } => cmd_split(&input, &output, force, json),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -617,15 +622,16 @@ fn cmd_extract(args: &ExtractArgs) -> CliResult {
 /// Serialises and writes a font via a sibling temp file and rename, so a
 /// failed write never leaves a truncated destination (and `-o <input>` stays
 /// safe: the input was fully read before this point).
-fn write_output(output: &Path, font: &SoundFont) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output(output: &Path, font: &SoundFont) -> Result<u64, Box<dyn std::error::Error>> {
     let bytes = write::write(font)?;
+    let size = bytes.len() as u64;
     let mut tmp_name = output.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
     std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, output)
         .map_err(|e| format!("cannot move {} to {}: {e}", tmp.display(), output.display()))?;
-    Ok(())
+    Ok(size)
 }
 
 /// Builds the shared JSON report for extract and merge results.
@@ -666,9 +672,12 @@ fn extract_json_report(
 }
 
 /// Filesystem-safe slug of a preset name: alphanumerics of any script plus
-/// `-` and `_` are kept (ASCII lowercased), runs of anything else — including
-/// every character Windows forbids in filenames — collapse to a single `-`;
-/// empty results fall back to "preset".
+/// `-` and `_` are kept, runs of anything else — including every character
+/// Windows forbids in filenames — collapse to a single `-`. Lowercasing is
+/// full Unicode so that names differing only in case produce the SAME stem
+/// (and thus get collision suffixes) instead of silently overwriting each
+/// other on case-insensitive filesystems. Empty results fall back to
+/// "preset".
 fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
@@ -678,7 +687,7 @@ fn slug(name: &str) -> String {
                 out.push('-');
             }
             gap = false;
-            out.push(character.to_ascii_lowercase());
+            out.extend(character.to_lowercase());
         } else {
             gap = true;
         }
@@ -712,22 +721,48 @@ struct SplitEntry {
     samples: usize,
 }
 
-/// Writes every preset of the input into its own .sf2 under `output`.
-fn cmd_split(input: &Path, output: &Path, json: bool) -> CliResult {
+/// Writes every preset of the input into its own .sf2 under `output`,
+/// streaming one part at a time (peak memory stays at one preset's worth).
+fn cmd_split(input: &Path, output: &Path, force: bool, json: bool) -> CliResult {
     let (font, _) = load_font(input)?;
     let issues = validate(&font);
     print_issues(&issues);
     if has_errors(&issues) {
-        return Err("input font fails validation; aborting".into());
+        if force {
+            emit_err("input font fails validation; salvaging what is reachable (--force)\n");
+        } else {
+            return Err("input font fails validation; aborting (use --force to salvage)".into());
+        }
     }
 
     std::fs::create_dir_all(output)
         .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
-    let parts = extract::split_presets(&font)?;
+    let occupied = std::fs::read_dir(output).is_ok_and(|mut dir| dir.next().is_some());
+    if occupied {
+        emit_err(&format!(
+            "warning: {} is not empty; same-named files are overwritten, others left in place\n",
+            output.display()
+        ));
+    }
+
+    let options = Options {
+        salvage: force,
+        ..Options::default()
+    };
+    let total = font.presets.len();
     let mut used = std::collections::HashSet::new();
-    let mut entries = Vec::with_capacity(parts.len());
-    for (_, single) in &parts {
-        let preset = &single.presets[0];
+    let mut entries: Vec<SplitEntry> = Vec::with_capacity(total);
+    for part in extract::split_presets(&font, &options) {
+        let progress = format!("after writing {} of {total} files", entries.len());
+        let single = part.map_err(|e| format!("{progress}: {e}"))?;
+        let output_issues = validate(&single);
+        if has_errors(&output_issues) {
+            print_issues(&output_issues);
+            return Err(format!("internal error: invalid part {progress}; not writing it").into());
+        }
+        let Some(preset) = single.presets.first() else {
+            return Err(format!("internal error: empty part {progress}").into());
+        };
         let stem = unique_stem(
             &mut used,
             &format!(
@@ -738,13 +773,13 @@ fn cmd_split(input: &Path, output: &Path, json: bool) -> CliResult {
             ),
         );
         let path = output.join(format!("{stem}.sf2"));
-        write_output(&path, single)?;
+        let size = write_output(&path, &single).map_err(|e| format!("{progress}: {e}"))?;
         entries.push(SplitEntry {
             bank: preset.bank,
             program: preset.program,
             name: preset.name.to_display(),
             file: path.display().to_string(),
-            size: write::file_size(single),
+            size,
             instruments: single.instruments.len(),
             samples: single.samples.len(),
         });
@@ -917,6 +952,7 @@ mod tests {
         assert_eq!(slug("E.Piano (bright)!"), "e-piano-bright");
         assert_eq!(slug("snare_2-alt"), "snare_2-alt");
         assert_eq!(slug("Flöte"), "flöte");
+        assert_eq!(slug("FLÖTE"), "flöte"); // full case fold, not just ASCII
         assert_eq!(slug("ピアノ 2"), "ピアノ-2");
         assert_eq!(slug("a<b>c:d"), "a-b-c-d");
     }
