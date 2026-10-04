@@ -136,6 +136,21 @@ jobs:
       - name: Real-font tests
         run: cargo test --release -- --ignored
 
+  # Public-API semver guard: compares against the latest tag once one exists.
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find baseline tag
+        id: baseline
+        run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+      - uses: obi1kenobi/cargo-semver-checks-action@v2.9
+        if: steps.baseline.outputs.tag != ''
+        with:
+          baseline-rev: ${{ steps.baseline.outputs.tag }}
+
   # Mutation testing is too slow for the PR gate; run on demand.
   mutants:
     if: github.event_name == 'workflow_dispatch'
