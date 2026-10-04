@@ -4,7 +4,7 @@ FROM rust:1-bookworm
 # Piped RUNs (curl | sh) must fail loudly.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG USERNAME=dev
+ARG DEV_USER=dev
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
@@ -41,28 +41,28 @@ RUN curl -fsSL https://dprint.dev/install.sh | DPRINT_INSTALL=/usr/local sh \
         *) HL_ARCH=x86_64 ;; \
     esac \
     && curl -fsSL -o /usr/local/bin/hadolint \
-        "https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-${HL_ARCH}" \
+        "https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-Linux-${HL_ARCH}" \
     && chmod +x /usr/local/bin/hadolint
 
 # Create the unprivileged user (no sudo). Pre-create the cargo registry dir so a
 # named volume mounted there inherits dev ownership instead of root.
-RUN groupadd --gid "$USER_GID" "$USERNAME" \
-    && useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$USERNAME" \
+RUN groupadd --gid "$USER_GID" "$DEV_USER" \
+    && useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$DEV_USER" \
     && mkdir -p /usr/local/cargo/registry \
-    && chown -R "$USERNAME:$USERNAME" /usr/local/cargo /usr/local/rustup
+    && chown -R "$DEV_USER:$DEV_USER" /usr/local/cargo /usr/local/rustup
 
 # Pre-create dirs backed by named volumes so they inherit dev ownership.
 # target/ lives in a volume both for speed and because rustc's incremental
 # hard links fail on virtiofs workspace mounts.
-RUN mkdir -p /home/$USERNAME/.claude /home/$USERNAME/.config/gh /home/$USERNAME/.local \
+RUN mkdir -p /home/$DEV_USER/.claude /home/$DEV_USER/.config/gh /home/$DEV_USER/.local \
     && mkdir -p /workspaces/sf2-cutter/target \
-    && chown -R "$USERNAME:$USERNAME" /home/$USERNAME /workspaces
+    && chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER /workspaces
 
 # Claude Code installs itself user-locally into ~/.local/bin. Extend PATH here
 # rather than in devcontainer.json's containerEnv: ${containerEnv:PATH} is only
 # expanded in remoteEnv, so using it there writes the literal string and wipes
 # the image PATH (the container then dies on "sleep: not found").
-ENV PATH=/home/$USERNAME/.local/bin:$PATH
+ENV PATH=/home/$DEV_USER/.local/bin:$PATH
 
-USER $USERNAME
+USER $DEV_USER
 WORKDIR /workspaces
