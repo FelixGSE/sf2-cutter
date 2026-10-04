@@ -461,6 +461,27 @@ fn remap_or_sanitize_link(
 
 /// Copies one sample's audio (plus guard points) to the new `smpl` buffer and
 /// rewrites the header's offsets relative to its new position.
+/// The 16-bit little-endian PCM bytes of a plain (uncompressed) sample.
+///
+/// # Errors
+///
+/// Returns [`Error::IndexOutOfBounds`] when the sample's point offsets run
+/// past the sample data.
+pub(crate) fn plain_sample_bytes<'a>(
+    font: &'a SoundFont,
+    sample: &SampleHeader,
+) -> Result<&'a [u8], Error> {
+    let start = sample.start as usize;
+    let end = sample.end as usize;
+    font.sample_data
+        .get(start * 2..end * 2)
+        .ok_or_else(|| Error::IndexOutOfBounds {
+            what: "sample data range",
+            index: end,
+            max: font.sample_points(),
+        })
+}
+
 pub(crate) fn relocate_sample(
     font: &SoundFont,
     sample: &SampleHeader,

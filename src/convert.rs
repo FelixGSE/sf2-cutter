@@ -36,19 +36,31 @@ pub fn compress(font: &SoundFont, quality: f32) -> Result<SoundFont, Error> {
             let cursor =
                 u32::try_from(out.sample_data.len()).map_err(|_| Error::TooLarge("smpl"))?;
             let stream = if sample.is_compressed() {
-                sample_bytes(font, sample.start as usize, sample.end as usize)?.to_vec()
+                crate::sf3::compressed_stream(font, sample, false)?.to_vec()
             } else {
-                let pcm = sample_pcm(font, sample.start as usize, sample.end as usize)?;
-                // SF3 loop points are relative to the decoded sample.
-                header.start_loop = sample.start_loop.saturating_sub(sample.start);
-                header.end_loop = sample.end_loop.saturating_sub(sample.start);
+                let pcm = crate::extract::plain_sample_bytes(font, sample)?;
+                let frames = u32::try_from(pcm.len() / 2).map_err(|_| Error::TooLarge("sample"))?;
+                // SF3 loop points are relative to the decoded sample; clamp
+                // them into it so players reading the sf3 directly never see
+                // a loop outside the audio.
+                header.start_loop = sample.start_loop.saturating_sub(sample.start).min(frames);
+                header.end_loop = sample
+                    .end_loop
+                    .saturating_sub(sample.start)
+                    .clamp(header.start_loop, frames);
                 header.sample_type |= SAMPLE_TYPE_COMPRESSED;
-                crate::sf3::encode_ogg(
-                    &sample.name.to_display(),
-                    &pcm,
-                    sample.sample_rate,
-                    quality,
-                )?
+                if pcm.is_empty() {
+                    // No stream for an empty sample; decode_sample maps an
+                    // empty range back to no audio.
+                    Vec::new()
+                } else {
+                    crate::sf3::encode_ogg(
+                        &sample.name.to_display(),
+                        pcm,
+                        sample.sample_rate,
+                        quality,
+                    )?
+                }
             };
             let len = u32::try_from(stream.len()).map_err(|_| Error::TooLarge("smpl"))?;
             out.sample_data.extend_from_slice(&stream);
@@ -102,33 +114,6 @@ pub fn decompress(font: &SoundFont) -> Result<SoundFont, Error> {
     };
     set_ifil(&mut out, [2, 0, 4, 0]);
     Ok(out)
-}
-
-fn sample_bytes(font: &SoundFont, start: usize, end: usize) -> Result<&[u8], Error> {
-    font.sample_data
-        .get(start..end)
-        .ok_or(Error::IndexOutOfBounds {
-            what: "compressed sample data range",
-            index: end,
-            max: font.sample_data.len(),
-        })
-}
-
-fn sample_pcm(font: &SoundFont, start: usize, end: usize) -> Result<Vec<i16>, Error> {
-    let bytes =
-        font.sample_data
-            .get(start * 2..end * 2)
-            .ok_or_else(|| Error::IndexOutOfBounds {
-                what: "sample data range",
-                index: end,
-                max: font.sample_points(),
-            })?;
-    Ok(bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| i16::from_le_bytes(*pair))
-        .collect())
 }
 
 fn set_ifil(font: &mut SoundFont, bytes: [u8; 4]) {
@@ -207,6 +192,58 @@ mod tests {
         }
         assert_eq!(back.version(), Some((2, 4)));
         assert!(!has_errors(&validate(&back)));
+    }
+
+    #[cfg(feature = "sf3-write")]
+    #[test]
+    fn compress_should_carry_streams_over_verbatim_when_font_is_already_sf3() {
+        // given
+        let once = compress(&test_font(), 0.5).unwrap();
+
+        // when
+        let twice = compress(&once, 0.9).unwrap();
+
+        // then: identical headers and byte-identical Ogg streams (no re-encode)
+        assert_eq!(twice.samples, once.samples);
+        assert_eq!(twice.sample_data, once.sample_data);
+        assert_eq!(twice.version(), Some((3, 0)));
+    }
+
+    #[cfg(feature = "sf3-write")]
+    #[test]
+    fn round_trip_should_keep_empty_sample_empty_when_compressing() {
+        // given: sample 0 shortened to zero points
+        let mut font = test_font();
+        font.samples[0].end = font.samples[0].start;
+        font.samples[0].start_loop = font.samples[0].start;
+        font.samples[0].end_loop = font.samples[0].start;
+
+        // when
+        let sf3 = compress(&font, 0.5).unwrap();
+        let back = decompress(&sf3).unwrap();
+
+        // then: no stream stored, and still zero points after decoding
+        assert_eq!(sf3.samples[0].start, sf3.samples[0].end);
+        assert_eq!(back.samples[0].len_points(), 0);
+        assert_eq!(back.samples[1].len_points(), font.samples[1].len_points());
+    }
+
+    #[cfg(feature = "sf3-write")]
+    #[test]
+    fn compress_should_clamp_loop_points_when_they_lie_outside_the_sample() {
+        // given: loop starting before and ending past the 200-point sample
+        let mut font = test_font();
+        let start = font.samples[0].start;
+        font.samples[0].start = start + 10;
+        font.samples[0].start_loop = start;
+        font.samples[0].end_loop = font.samples[0].end + 50;
+
+        // when
+        let sf3 = compress(&font, 0.5).unwrap();
+
+        // then: decoded-relative loop inside 0..=190
+        assert_eq!(sf3.samples[0].start_loop, 0);
+        assert_eq!(sf3.samples[0].end_loop, 190);
     }
 
     #[cfg(feature = "sf3-write")]

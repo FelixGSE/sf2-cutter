@@ -18,6 +18,27 @@ pub(crate) fn decode_sample(
     sample: &SampleHeader,
     clamp: bool,
 ) -> Result<Vec<i16>, Error> {
+    let stream = compressed_stream(font, sample, clamp)?;
+    if stream.is_empty() {
+        // An empty sample has no stream at all (encoding zero frames would
+        // produce a malformed one), so it decodes to no audio.
+        return Ok(Vec::new());
+    }
+    decode_ogg(&sample.name.to_display(), stream)
+}
+
+/// The raw Ogg bytes of a compressed sample (`start`/`end` are BYTE offsets
+/// into `smpl`); `clamp` clips them to the available data instead of failing.
+///
+/// # Errors
+///
+/// Returns [`Error::IndexOutOfBounds`] for out-of-range offsets (unless
+/// clamping).
+pub(crate) fn compressed_stream<'a>(
+    font: &'a SoundFont,
+    sample: &SampleHeader,
+    clamp: bool,
+) -> Result<&'a [u8], Error> {
     let total = font.sample_data.len();
     let (start, end) = if clamp {
         let start = (sample.start as usize).min(total);
@@ -25,15 +46,13 @@ pub(crate) fn decode_sample(
     } else {
         (sample.start as usize, sample.end as usize)
     };
-    let stream = font
-        .sample_data
+    font.sample_data
         .get(start..end)
         .ok_or(Error::IndexOutOfBounds {
             what: "compressed sample data range",
             index: end,
             max: total,
-        })?;
-    decode_ogg(&sample.name.to_display(), stream)
+        })
 }
 
 /// Decodes an Ogg-Vorbis stream to 16-bit PCM. Multi-channel streams yield
@@ -71,11 +90,13 @@ pub fn decode_ogg(name: &str, bytes: &[u8]) -> Result<Vec<i16>, Error> {
     Ok(pcm)
 }
 
-/// Encodes mono 16-bit PCM to an Ogg-Vorbis stream (quality 0.0..=1.0).
+/// Encodes mono 16-bit little-endian PCM bytes to an Ogg-Vorbis stream
+/// (quality 0.0..=1.0). Callers must not pass empty audio: libvorbis treats
+/// a zero-length block as end-of-stream and emits a malformed stream.
 #[cfg(feature = "sf3-write")]
 pub(crate) fn encode_ogg(
     name: &str,
-    pcm: &[i16],
+    pcm_le: &[u8],
     sample_rate: u32,
     quality: f32,
 ) -> Result<Vec<u8>, Error> {
@@ -97,7 +118,12 @@ pub(crate) fn encode_ogg(
         target_quality: quality,
     });
     let mut encoder = builder.build().map_err(|e| fail(e.to_string()))?;
-    let block: Vec<f32> = pcm.iter().map(|&v| f32::from(v) / 32_768.0).collect();
+    let block: Vec<f32> = pcm_le
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| f32::from(i16::from_le_bytes(*pair)) / 32_768.0)
+        .collect();
     encoder
         .encode_audio_block([&block])
         .map_err(|e| fail(e.to_string()))?;
@@ -119,7 +145,8 @@ mod tests {
             .collect();
 
         // when
-        let stream = encode_ogg("tone", &pcm, 8000, 0.5).unwrap();
+        let bytes: Vec<u8> = pcm.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let stream = encode_ogg("tone", &bytes, 8000, 0.5).unwrap();
         let decoded = decode_ogg("tone", &stream).unwrap();
 
         // then: lossy but sample-exact in length, and clearly not silence
@@ -132,10 +159,68 @@ mod tests {
     #[test]
     fn encode_should_fail_when_quality_is_out_of_range() {
         // given / when
-        let result = encode_ogg("bad", &[0; 100], 8000, 9.0);
+        let result = encode_ogg("bad", &[0; 200], 8000, 9.0);
 
         // then
         assert!(matches!(result, Err(Error::Sf3Encode { .. })));
+    }
+
+    #[cfg(feature = "sf3-write")]
+    #[test]
+    fn decode_should_return_first_channel_when_stream_is_stereo() {
+        // given: a stereo stream, a slow tone on the left, inverted on the right
+        let frames = 8000usize;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let left: Vec<f32> = (0..frames)
+            .map(|i| ((i as f32) * 0.03).sin() * 0.5)
+            .collect();
+        // right is the inverted left: interleaved L/R output would alternate
+        // sign and fail the correlation check below
+        let right: Vec<f32> = left.iter().map(|v| -v).collect();
+        let mut stream = Vec::new();
+        let mut encoder = vorbis_rs::VorbisEncoderBuilder::new(
+            std::num::NonZeroU32::new(8000).unwrap(),
+            std::num::NonZeroU8::new(2).unwrap(),
+            &mut stream,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        encoder.encode_audio_block([&left, &right]).unwrap();
+        encoder.finish().unwrap();
+
+        // when
+        let decoded = decode_ogg("stereo", &stream).unwrap();
+
+        // then: one channel's worth of frames, and the waveform is the left
+        // channel (strong positive correlation), not interleaved L/R
+        assert_eq!(decoded.len(), frames);
+        let dot: f64 = decoded
+            .iter()
+            .zip(&left)
+            .map(|(&d, &l)| f64::from(d) * f64::from(l))
+            .sum();
+        let energy: f64 = decoded.iter().map(|&d| f64::from(d) * f64::from(d)).sum();
+        let reference: f64 = left.iter().map(|&l| f64::from(l) * f64::from(l)).sum();
+        let correlation = dot / (energy.sqrt() * reference.sqrt());
+        assert!(
+            correlation > 0.9,
+            "correlation with left channel: {correlation}"
+        );
+    }
+
+    #[test]
+    fn decode_sample_should_return_no_audio_when_stream_is_empty() {
+        // given: a compressed sample with start == end
+        let mut font = crate::builder::test_font();
+        font.samples[0].sample_type |= crate::model::SAMPLE_TYPE_COMPRESSED;
+        font.samples[0].end = font.samples[0].start;
+
+        // when
+        let pcm = decode_sample(&font, &font.samples[0], false).unwrap();
+
+        // then
+        assert_eq!(pcm, Vec::<i16>::new());
     }
 
     #[test]

@@ -71,8 +71,9 @@ sf2-cutter convert MuseScore_General.sf3 -o general.sf2     # decompress to plai
 ```
 
 Compressing requires the `sf3-write` cargo feature (off by default — it builds the vendored
-aoTuV/libvorbis C encoder; release binaries ship with it enabled). Compression drops any
-24-bit `sm24` extension.
+aoTuV/libvorbis C encoder; release binaries ship with it enabled). Compression is lossy and
+drops any 24-bit `sm24` extension, and not every player reads `.sf3` (fluidsynth and MuseScore
+do; many hardware and DAW samplers do not).
 
 Selection criteria:
 
