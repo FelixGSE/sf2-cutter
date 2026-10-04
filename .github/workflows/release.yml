@@ -8,7 +8,31 @@ permissions:
   contents: write
 
 jobs:
+  # The upload action only attaches assets to an existing release. release-plz
+  # creates one when it tags; for a hand-pushed tag, create it here from the
+  # matching CHANGELOG section.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the GitHub release unless it already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            /^## \[/ || /^\[[^]]+\]: / { found = 0 }
+            found
+          ' CHANGELOG.md | sed '/./,$!d' > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
+
   upload-assets:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
