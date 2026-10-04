@@ -16,6 +16,10 @@ pub const NAME_LEN: usize = 20;
 pub const GEN_INSTRUMENT: u16 = 41;
 /// Generator operator that links an instrument zone to a sample (spec: `sampleID`, 53).
 pub const GEN_SAMPLE_ID: u16 = 53;
+/// Generator operator restricting a zone to a MIDI key range (spec: `keyRange`, 43).
+pub const GEN_KEY_RANGE: u16 = 43;
+/// Generator operator restricting a zone to a velocity range (spec: `velRange`, 44).
+pub const GEN_VEL_RANGE: u16 = 44;
 
 /// `sfSampleType` flag marking a sample stored in ROM.
 pub const SAMPLE_TYPE_ROM: u16 = 0x8000;
@@ -92,13 +96,44 @@ pub struct Generator {
     pub amount: u16,
 }
 
+/// A generator amount decoded according to the spec type of its operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum GeneratorValue {
+    /// `rangesType`: an inclusive low/high pair (`keyRange`, `velRange`).
+    Range {
+        /// Low end of the range.
+        lo: u8,
+        /// High end of the range.
+        hi: u8,
+    },
+    /// `wAmount`: an unsigned index (`instrument`, `sampleID`).
+    Unsigned(u16),
+    /// `shAmount`: a signed value (every other operator).
+    Signed(i16),
+}
+
+impl Generator {
+    /// The amount decoded per the spec type of this generator's operator.
+    #[must_use]
+    pub const fn value(&self) -> GeneratorValue {
+        let [lo, hi] = self.amount.to_le_bytes();
+        match self.oper {
+            GEN_KEY_RANGE | GEN_VEL_RANGE => GeneratorValue::Range { lo, hi },
+            GEN_INSTRUMENT | GEN_SAMPLE_ID => GeneratorValue::Unsigned(self.amount),
+            _ => GeneratorValue::Signed(i16::from_le_bytes([lo, hi])),
+        }
+    }
+}
+
 impl serde::Serialize for Generator {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut row = serializer.serialize_struct("Generator", 3)?;
+        let mut row = serializer.serialize_struct("Generator", 4)?;
         row.serialize_field("oper", &self.oper)?;
         row.serialize_field("name", &generator_name(self.oper))?;
         row.serialize_field("amount", &self.amount)?;
+        row.serialize_field("value", &self.value())?;
         row.end()
     }
 }
@@ -526,6 +561,50 @@ mod tests {
         assert_eq!(generator_name(43), Some("keyRange"));
         assert_eq!(generator_name(14), None);
         assert_eq!(generator_name(999), None);
+    }
+
+    #[test]
+    fn generator_value_should_decode_per_spec_type_when_operator_varies() {
+        // given
+        let pan = Generator {
+            oper: 17,
+            amount: u16::from_le_bytes((-500i16).to_le_bytes()),
+        };
+        let key_range = Generator {
+            oper: GEN_KEY_RANGE,
+            amount: u16::from_le_bytes([24, 96]),
+        };
+        let instrument = Generator {
+            oper: GEN_INSTRUMENT,
+            amount: 40_000,
+        };
+
+        // when / then
+        assert_eq!(pan.value(), GeneratorValue::Signed(-500));
+        assert_eq!(key_range.value(), GeneratorValue::Range { lo: 24, hi: 96 });
+        assert_eq!(instrument.value(), GeneratorValue::Unsigned(40_000));
+    }
+
+    #[test]
+    fn generator_should_serialize_decoded_value_when_dumped() {
+        // given
+        let vel_range = Generator {
+            oper: GEN_VEL_RANGE,
+            amount: u16::from_le_bytes([1, 127]),
+        };
+        let tune = Generator {
+            oper: 51,
+            amount: u16::from_le_bytes((-12i16).to_le_bytes()),
+        };
+
+        // when
+        let vel_json = serde_json::to_value(vel_range).unwrap();
+        let tune_json = serde_json::to_value(tune).unwrap();
+
+        // then: raw amount kept, decoded value alongside
+        assert_eq!(vel_json["amount"], 32_513);
+        assert_eq!(vel_json["value"], serde_json::json!({"lo": 1, "hi": 127}));
+        assert_eq!(tune_json["value"], -12);
     }
 
     #[test]
