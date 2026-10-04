@@ -22,18 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work as extraction inputs; kept samples are decoded to plain PCM
 - provenance stamping: outputs append `sf2-cutter v<version>` to the `ISFT`
   tool chain
+- `split`: one validated `.sf2` per preset, streamed one at a time, with
+  Unicode-preserving filenames and `--force` salvage
+- `dump`: the complete font structure as JSON, with generator names and
+  decoded values (signed amounts, key/velocity ranges)
+- `samples`: export sample audio as WAV, for all samples or a preset
+  selection, keeping the input font's sample numbering; `--force` skips
+  samples that cannot be exported
+- `convert`: sf2 ⇄ sf3 in both directions; compressing uses the vendored
+  Vorbis encoder behind the off-by-default `sf3-write` feature
 - shell completions (`completions <shell>`) and a man page (`man`)
+- release binaries for Linux (static musl, x86_64/aarch64), macOS (arm64),
+  and Windows, with sha256 checksums and sf3 compression included
 - quality gates: clippy pedantic with complexity ceilings, 80% line-coverage
   floor, mutation testing, libFuzzer targets, property-based tests, and
   fluidsynth round-trip audio verification
-
-### In review
-
-- `split` — one `.sf2` per preset (#5)
-- `dump` — full structural JSON with named generators (#6)
-- `samples` — WAV export of sample audio (#7)
-- `convert` — sf2 ⇄ sf3 with the vendored Vorbis encoder behind the
-  off-by-default `sf3-write` feature (#8)
 
 ## [0.1.0] — unreleased
 
