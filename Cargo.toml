@@ -10,6 +10,8 @@ repository = "https://github.com/FelixGSE/sf2-cutter"
 readme = "README.md"
 keywords = ["soundfont", "sf2", "midi", "audio", "cli"]
 categories = ["command-line-utilities", "multimedia::audio"]
+# Keep the crates.io tarball to what a consumer needs.
+include = ["src/**", "Cargo.toml", "LICENSE", "README.md"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
