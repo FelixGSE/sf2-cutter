@@ -78,8 +78,7 @@ pub fn decompress(font: &SoundFont) -> Result<SoundFont, Error> {
         if sample.is_rom() {
             // ROM offsets address ROM, not smpl; nothing to relocate.
         } else if sample.is_compressed() {
-            let stream = sample_bytes(font, sample.start as usize, sample.end as usize)?;
-            let pcm = crate::sf3::decode_ogg(&sample.name.to_display(), stream)?;
+            let pcm = crate::sf3::decode_sample(font, sample, false)?;
             crate::extract::place_decoded(sample, &mut header, &pcm, &mut data, data_24.as_mut())?;
         } else {
             crate::extract::relocate_sample(

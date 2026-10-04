@@ -33,7 +33,6 @@ sf3 = ["dep:lewton"]
 # Write support for SF3: encodes samples with the vendored aoTuV/libvorbis
 # encoder (C, via vorbis_rs). Off by default to keep the default build pure Rust.
 sf3-write = ["sf3", "dep:vorbis_rs"]
-vorbis_rs = ["dep:vorbis_rs"]
 
 [lints.rust]
 missing_docs = "warn"
