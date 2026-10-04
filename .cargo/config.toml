@@ -1,6 +1,0 @@
-# Incremental codegen hard-links object files, which intermittently fails
-# with EACCES when target/ sits on a virtiofs mount (macOS/Lima docker).
-# The devcontainer moves target/ into a named volume on its next rebuild;
-# until then (and for any host checkout on virtiofs) incremental stays off.
-[build]
-incremental = false
