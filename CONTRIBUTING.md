@@ -16,15 +16,27 @@ fluidsynth on PATH for the audio round-trip tests (they skip when it is absent).
 ```sh
 make check     # fmt-check, clippy -D warnings (pedantic + complexity ceilings),
                # tests, rustdoc lints, coverage floor (make coverage COVERAGE_MIN=NN)
-make mutants   # cargo-mutants; new survivors must be killed or documented below
+make mutants   # cargo-mutants; new survivors must be killed or listed below
 make fuzz      # libFuzzer over parse + write/parse round trip (nightly, on demand)
 cargo test --no-default-features   # the sf3-less build must stay green
 cargo test --all-features          # includes the sf3-write Vorbis encoder
 cargo test -- --ignored            # real-font tests; needs FluidR3_GM.sf2 in the repo root
 ```
 
-Known equivalent (unkillable) mutants are documented in the repository's quality notes;
-anything new that `make mutants` reports must be killed by a test or justified in the PR.
+Mutation runs skip `src/main.rs` (thin CLI glue) and enable the `sf3-write` feature, so
+the SF3 encoder and decoder are covered. Anything `make mutants` reports must be killed by a
+test or justified in the PR. Known equivalent (unkillable) survivors:
+
+- `|` → `^` on the disjoint-bit sample-type constants in `model.rs`, and on the masked ROM
+  bit in `extract::remap_or_sanitize_link`
+- `+1` → `*1` in `select.rs`'s wildcard backtracker (the mutant reaches the same state one
+  iteration later)
+- the `None if salvage` match guard in `extract::remap_zones` (strict reachability rejects the
+  same dangling reference first)
+- arithmetic inside the `Vec::reserve` size hint in `extract::place_decoded` (capacity hints
+  have no observable effect)
+- the `cfg(not(feature = "sf3"))` stubs, which mutation runs do not compile; they are covered
+  by `cargo test --no-default-features`
 
 ## Test conventions (mandatory)
 
