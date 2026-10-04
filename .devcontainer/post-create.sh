@@ -5,6 +5,12 @@ set -euo pipefail
 rustc --version
 cargo --version
 gh --version | head -n 1
+
+# Claude Code via the official installer: user-local (~/.local, volume-backed),
+# so `claude update` works without sudo and survives container rebuilds.
+if ! command -v claude >/dev/null 2>&1; then
+    curl -fsSL https://claude.ai/install.sh | bash
+fi
 claude --version
 
 # Let git use gh's credentials (GH_TOKEN or `gh auth login`) for HTTPS remotes.

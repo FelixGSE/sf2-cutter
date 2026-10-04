@@ -40,7 +40,7 @@ RUN groupadd --gid "$USER_GID" "$USERNAME" \
 # Pre-create dirs backed by named volumes so they inherit dev ownership.
 # target/ lives in a volume both for speed and because rustc's incremental
 # hard links fail on virtiofs workspace mounts.
-RUN mkdir -p /home/$USERNAME/.claude /home/$USERNAME/.config/gh \
+RUN mkdir -p /home/$USERNAME/.claude /home/$USERNAME/.config/gh /home/$USERNAME/.local \
     && mkdir -p /workspaces/sf2-cutter/target \
     && chown -R "$USERNAME:$USERNAME" /home/$USERNAME /workspaces
 
