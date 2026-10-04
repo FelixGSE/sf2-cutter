@@ -3,6 +3,38 @@
 //! Compiled only with the `sf3` cargo feature.
 
 use crate::error::Error;
+use crate::model::{SampleHeader, SoundFont};
+
+/// Decodes one compressed sample of `font` to PCM. Its `start`/`end` are
+/// BYTE offsets of the Ogg stream in `smpl` (the SF3 convention); `clamp`
+/// clips them to the available data instead of failing (salvage mode).
+///
+/// # Errors
+///
+/// Returns [`Error::IndexOutOfBounds`] for out-of-range offsets (unless
+/// clamping) and [`Error::Sf3Decode`] for undecodable streams.
+pub(crate) fn decode_sample(
+    font: &SoundFont,
+    sample: &SampleHeader,
+    clamp: bool,
+) -> Result<Vec<i16>, Error> {
+    let total = font.sample_data.len();
+    let (start, end) = if clamp {
+        let start = (sample.start as usize).min(total);
+        (start, (sample.end as usize).clamp(start, total))
+    } else {
+        (sample.start as usize, sample.end as usize)
+    };
+    let stream = font
+        .sample_data
+        .get(start..end)
+        .ok_or(Error::IndexOutOfBounds {
+            what: "compressed sample data range",
+            index: end,
+            max: total,
+        })?;
+    decode_ogg(&sample.name.to_display(), stream)
+}
 
 /// Decodes an Ogg-Vorbis stream to 16-bit PCM. Multi-channel streams yield
 /// their first channel (SF3 stores stereo as two linked mono streams, so

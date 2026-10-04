@@ -144,6 +144,10 @@ enum Command {
         /// Only samples reachable from this preset address (repeatable)
         #[arg(short = 'p', long = "preset", value_name = "BANK:PROG")]
         presets: Vec<String>,
+        /// Export despite validation errors, skipping (and reporting) samples
+        /// that cannot be exported instead of aborting
+        #[arg(long)]
+        force: bool,
         /// Emit a machine-readable JSON report on stdout
         #[arg(long)]
         json: bool,
@@ -233,8 +237,16 @@ fn run(cli: Cli) -> CliResult {
             output,
             patterns,
             presets,
+            force,
             json,
-        } => cmd_samples(&input, &output, &patterns, &presets, json),
+        } => cmd_samples(&SamplesArgs {
+            input,
+            output,
+            patterns,
+            presets,
+            force,
+            json,
+        }),
         Command::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -859,70 +871,109 @@ struct SampleEntry {
     index: usize,
     name: String,
     file: String,
-    points: u32,
+    frames: usize,
     sample_rate: u32,
 }
 
-/// Exports sample audio as WAV files, optionally restricted to the samples
-/// reachable from a preset selection (by extracting first).
-fn cmd_samples(
-    input: &Path,
-    output: &Path,
-    patterns: &[String],
-    preset_specs: &[String],
+#[derive(serde::Serialize)]
+struct SkippedSample {
+    index: usize,
+    name: String,
+    reason: String,
+}
+
+struct SamplesArgs {
+    input: PathBuf,
+    output: PathBuf,
+    patterns: Vec<String>,
+    presets: Vec<String>,
+    force: bool,
     json: bool,
-) -> CliResult {
-    let (font, _) = load_font(input)?;
+}
+
+/// Exports sample audio as WAV files: every sample, or only those reachable
+/// from a preset selection. Indices (filename prefix and report) always refer
+/// to the input font, so they match `dump`/`validate`.
+fn cmd_samples(args: &SamplesArgs) -> CliResult {
+    let (font, _) = load_font(&args.input)?;
     let issues = validate(&font);
     print_issues(&issues);
     if has_errors(&issues) {
-        return Err("input font fails validation; aborting".into());
+        if args.force {
+            emit_err("input font fails validation; exporting what is possible (--force)\n");
+        } else {
+            return Err(
+                "input font fails validation; aborting (use --force to skip bad samples)".into(),
+            );
+        }
     }
 
     let mut selection = Selection::new();
-    for pattern in patterns {
+    for pattern in &args.patterns {
         selection.add_pattern(pattern);
     }
-    for spec in preset_specs {
+    for spec in &args.presets {
         selection.add_spec(spec.parse()?);
     }
-    let font = if selection.is_empty() {
-        font
-    } else {
-        extract::extract(&font, &selection, &Options::default())?
+    let options = Options {
+        salvage: args.force,
+        ..Options::default()
     };
+    let indices: Vec<usize> = if selection.is_empty() {
+        (0..font.samples.len()).collect()
+    } else {
+        extract::reachable_sample_indices(&font, &selection, &options)?
+    };
+    if font.sm24_usable() {
+        emit_err("note: the font carries 24-bit (sm24) detail; WAVs are exported as 16-bit\n");
+    }
 
-    prepare_output_dir(output)?;
-    let mut used = std::collections::HashSet::new();
+    prepare_output_dir(&args.output)?;
     let mut entries = Vec::new();
+    let mut skipped = Vec::new();
     let mut skipped_rom = 0usize;
-    for (index, sample) in font.samples.iter().enumerate() {
+    for index in indices {
+        let Some(sample) = font.samples.get(index) else {
+            continue; // unreachable: indices come from this font
+        };
         if sample.is_rom() {
             skipped_rom += 1;
             continue;
         }
         let progress = format!("after writing {} WAV files", entries.len());
-        let wav =
-            sf2_cutter::export::sample_wav(&font, index).map_err(|e| format!("{progress}: {e}"))?;
-        let stem = unique_stem(
-            &mut used,
-            &format!("{index:04}-{}", slug(&sample.name.to_display(), "sample")),
-        );
-        let path = output.join(format!("{stem}.wav"));
-        write_bytes(&path, &wav).map_err(|e| format!("{progress}: {e}"))?;
+        let wav = match sf2_cutter::export::sample_wav(&font, index) {
+            Ok(wav) => wav,
+            Err(error) if args.force => {
+                emit_err(&format!("warning: skipping sample {index}: {error}\n"));
+                skipped.push(SkippedSample {
+                    index,
+                    name: sample.name.to_display(),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("{progress}: {error} (use --force to skip it)").into());
+            }
+        };
+        // The zero-padded index is unique per sample, so no collision handling.
+        let stem = format!("{index:04}-{}", slug(&sample.name.to_display(), "sample"));
+        let path = args.output.join(format!("{stem}.wav"));
+        write_bytes(&path, &wav.bytes).map_err(|e| format!("{progress}: {e}"))?;
         entries.push(SampleEntry {
             index,
             name: sample.name.to_display(),
             file: path.display().to_string(),
-            points: sample.len_points(),
+            frames: wav.frames,
             sample_rate: sample.sample_rate,
         });
     }
 
-    if json {
+    if args.json {
         emit_json(&serde_json::json!({
             "count": entries.len(),
             "skipped_rom": skipped_rom,
+            "skipped": skipped,
             "written": entries,
         }))?;
     } else {
@@ -932,9 +983,10 @@ fn cmd_samples(
         }
         let _ = writeln!(
             buf,
-            "exported {} samples to {} ({skipped_rom} ROM samples skipped)",
+            "exported {} samples to {} ({skipped_rom} ROM samples skipped, {} failed and skipped)",
             entries.len(),
-            output.display()
+            args.output.display(),
+            skipped.len()
         );
         emit(&buf)?;
     }
