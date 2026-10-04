@@ -111,5 +111,7 @@ Releases are built automatically for Linux (x86_64/aarch64), macOS (arm64), and 
 when a `v*` tag is pushed. Dependency licenses and advisories are checked in CI with
 cargo-deny.
 
-See `CLAUDE.md` for architecture and the mandatory test conventions
-(given/when/then structure, `<subject>_should_<outcome>_when_<condition>` naming).
+Test conventions: every test is structured with `// given` / `// when` / `// then`
+comments and named `<subject>_should_<outcome>_when_<condition>`. Architecture: library
+modules `riff`, `model`, `parse`, `write`, `validate`, `select`, `extract`, `merge`,
+`edit`, `builder`, and `sf3` (feature-gated); `src/main.rs` is thin CLI glue.
