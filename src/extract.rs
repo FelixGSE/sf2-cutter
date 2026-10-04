@@ -66,6 +66,26 @@ pub fn extract(
     Ok(out)
 }
 
+/// Extracts every preset into its own single-preset font, in preset order.
+///
+/// Each output goes through the normal extraction pipeline, so it is minimal,
+/// re-indexed, validated-by-construction, and provenance-stamped like any
+/// other extraction.
+///
+/// # Errors
+///
+/// Returns the first extraction error encountered (see [`extract`]). A font
+/// with no presets yields an empty list, not an error.
+pub fn split_presets(font: &SoundFont) -> Result<Vec<(usize, SoundFont)>, Error> {
+    (0..font.presets.len())
+        .map(|index| {
+            let mut selection = Selection::new();
+            selection.add_index(index);
+            extract(font, &selection, &Options::default()).map(|single| (index, single))
+        })
+        .collect()
+}
+
 /// Unique bytes of non-ROM sample data reachable from one preset; the basis
 /// for the per-preset size estimate in listings. Dangling references are
 /// ignored rather than reported.
@@ -1356,6 +1376,39 @@ mod tests {
         // then: one LSB byte per output sample point, exactly
         let points = result.sample_points();
         assert_eq!(result.sample_data_24.unwrap().len(), points);
+    }
+
+    #[test]
+    fn split_should_produce_one_valid_font_per_preset_when_font_has_presets() {
+        // given
+        let font = test_font();
+
+        // when
+        let parts = split_presets(&font).unwrap();
+
+        // then: one single-preset font each, original addresses, all clean
+        assert_eq!(parts.len(), 3);
+        for (index, single) in &parts {
+            assert_eq!(single.presets.len(), 1);
+            assert_eq!(single.presets[0].bank, font.presets[*index].bank);
+            assert_eq!(single.presets[0].program, font.presets[*index].program);
+            assert!(!has_errors(&validate(single)));
+        }
+        // the piano split must not drag along strings or drum samples
+        assert_eq!(parts[0].1.samples.len(), 1);
+    }
+
+    #[test]
+    fn split_should_return_empty_list_when_font_has_no_presets() {
+        // given
+        let mut font = test_font();
+        font.presets.clear();
+
+        // when
+        let parts = split_presets(&font).unwrap();
+
+        // then
+        assert_eq!(parts.len(), 0);
     }
 
     #[test]
