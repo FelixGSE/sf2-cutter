@@ -84,7 +84,7 @@ jobs:
         with:
           dockerfile: .devcontainer/Dockerfile
       - name: dprint check
-        uses: dprint/check@v2.5
+        uses: dprint/check@v2.6
 
   deny:
     runs-on: ubuntu-latest
